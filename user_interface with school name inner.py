@@ -50,6 +50,14 @@ print_jobs = []
 SEEKPOS = 9938
 Input=(420*2.83465,(290*2.83465))
 
+school_vars = []
+schools_inner_frame = None
+school_canvas = None
+kid_index_entry = None
+status_label = None
+size_info_label = None
+scale_info_label = None
+
 def storeDocs2(subject):
    
    
@@ -214,13 +222,62 @@ def storePS (tuple, prev, subDict):
       
       doc_maker.personalize(tuple, subject, CheckVar2.get(),False)
    # storeDocs(subject, str(tuple["BOOKID"]).zfill(3), subDict[subject])
-   
-   
+
+
+
+def populate_school_checkboxes():
+   global school_vars, schools_inner_frame, school_canvas, status_label
+
+   if schools_inner_frame is None:
+      return
+
+   for child in schools_inner_frame.winfo_children():
+      child.destroy()
+
+   school_vars = []
+
+   if file == "":
+      return
+
+   try:
+      df = pd.read_excel(file, header=0)
+   except Exception as exc:
+      if status_label is not None:
+         status_label.configure(fg="red", text=f"Failed to load schools: {exc}")
+      return
+
+   if "school_name" not in df.columns:
+      if status_label is not None:
+         status_label.configure(fg="red", text="Column 'school_name' not found in sheet.")
+      return
+
+   schools = sorted({str(name).strip() for name in df["school_name"] if pd.notna(name) and str(name).strip() != ""})
+
+   if not schools:
+      if status_label is not None:
+         status_label.configure(fg="red", text="No schools found in sheet.")
+      return
+
+   for name in schools:
+      var = tk.IntVar(value=0)
+      chk = tk.Checkbutton(schools_inner_frame, text=name, variable=var, anchor="w", justify="left")
+      chk.pack(fill="x", anchor="w")
+      school_vars.append((var, name))
+
+   if school_canvas is not None:
+      school_canvas.yview_moveto(0)
+
+   if status_label is not None:
+      status_label.configure(fg="green", text=f"Loaded {len(schools)} school(s). Select to process.")
+
 
 def open_win_diag():
    # Create a dialog box
    global file
    file=filedialog.askopenfilename(initialdir="E:/winapp")
+
+   if file:
+      populate_school_checkboxes()
 
 
 
@@ -236,31 +293,81 @@ def convert_cmyk_to_rgb(input_path, output_path):
 
 def make(dum):
    spine=0
-   global file,folder
+   global file,folder, school_vars, kid_index_entry, status_label, selected_size
    if file == "" :
-      lbl2.configure(text = "ERROR SELECT EXCEL \nFILE AND FOLDER \nWTH PHOTOS" )
+      if status_label is not None:
+         status_label.configure(fg="red", text = "ERROR SELECT EXCEL \nFILE AND FOLDER \nWTH PHOTOS" )
       return
-   elif size=="":
-      lbl2.configure(text="ERROR SELECT A BOOKLET SIZE ")
+
+   current_size = ""
+   if 'selected_size' in globals() and selected_size is not None:
+      current_size = selected_size.get()
+
+   if current_size == "":
+      if status_label is not None:
+         status_label.configure(fg="red", text="ERROR SELECT A BOOKLET SIZE ")
       return
-         
-   
+
+
    if os.path.isdir("FINAL BINDERS") == False:
       os.makedirs("FINAL BINDERS", exist_ok=True)
-   idx = txt.get()
 
-   if idx .startswith('U'):
-      
-      idx1=idx[1:].split(',')
-      list_idx=[ f.strip() for f in idx1 ]
-      
-   else:
-      idx1 = idx.split(",")
-      fromIdx = int(idx1[0].strip())
-      toIdx = int(idx1[1].strip())
-   
-  
-   
+   kid_idx = ""
+   if kid_index_entry is not None:
+      kid_idx = kid_index_entry.get().strip()
+
+   kid_idx = kid_idx if kid_idx is not None else ""
+
+   selected_school_names = {name for var, name in school_vars if var.get() == 1}
+
+   process_single_kid = False
+   target_user_id = None
+   target_book_id = None
+
+   if kid_idx:
+      process_single_kid = True
+      if kid_idx.upper().startswith('U'):
+         target_user_id = kid_idx[1:].strip()
+         if target_user_id == "":
+            if status_label is not None:
+               status_label.configure(fg="red", text="Enter a valid user id after 'U'.")
+            return
+      else:
+         try:
+            target_book_id = int(kid_idx)
+         except ValueError:
+            if status_label is not None:
+               status_label.configure(fg="red", text="Kid index must be numeric or start with 'U'.")
+            return
+   elif not selected_school_names:
+      if status_label is not None:
+         status_label.configure(fg="red", text="Select at least one school or enter a kid index.")
+      return
+
+
+   def matches_selection(item: Dict[str, Any]) -> bool:
+      if process_single_kid:
+         if target_user_id is not None:
+            return str(item.get("user_id", "")).strip() == target_user_id
+         if target_book_id is not None:
+            try:
+               return int(item.get("book_id")) == target_book_id
+            except (TypeError, ValueError):
+               return False
+         return False
+
+      school_value = item.get("school_name", "")
+      if pd.isna(school_value):
+         school_value = ""
+      else:
+         school_value = str(school_value).strip()
+      return school_value in selected_school_names
+
+
+   if status_label is not None:
+      status_label.configure(text="", fg="red")
+
+
    df = pd.read_excel(file, header=0)
    data = df.to_dict('index')
    subjectIDX = {}
@@ -280,11 +387,7 @@ def make(dum):
          if pd.isna(item["last_name"]):
             item["last_name"] = ''
             print(item["book_id"])
-         if idx.startswith('U'):
-            if item["user_id"] not in list_idx:
-               continue
-         
-         elif int(item["book_id"]) < fromIdx or int(item["book_id"]) > toIdx:
+         if not matches_selection(item):
             continue
          
          if str(item["outer_code"]).endswith("s") or str(item["outer_code"]).strip()=="":
@@ -337,10 +440,7 @@ def make(dum):
    
    if checkVar4.get()==1:
       for key,item in data.items():
-         if idx.startswith('U'):
-            if item["user_id"] not in list_idx:
-               continue
-         elif int(item["book_id"]) < fromIdx or int(item["book_id"]) > toIdx:
+         if not matches_selection(item):
             continue
          if str(item["inner_code"]).endswith("b") or str(item["inner_code"]).strip()=="":
             continue
@@ -358,89 +458,126 @@ def make(dum):
  
 # root window title and dimension
 root.title("Processing UI")
-# Set geometry(widthxheight) 
-root.geometry('350x350')
+# Set geometry(widthxheight)
+root.geometry('520x650')
 
+root.grid_columnconfigure(0, weight=1)
+root.grid_columnconfigure(1, weight=1)
+root.grid_rowconfigure(4, weight=1)
 
 
 #_thread.start_new_thread(printOut, (0,))
 # adding Entry Field
 button=tk.Button(root, text="Open Excel Sheet", command=open_win_diag)
-button.grid(column =1, row =0)
+button.grid(column=0, row=0, columnspan=2, pady=(10,5))
 
-lbl = tk.Label(root, text = "Book Index From,TO:")
-lbl.grid(column =0, row =2)
-txt = tk.Entry(root, width=10)
-txt.grid(column =1, row =2)
-size_label = tk.Label(root, text="Select a size from dropdown")
-size_label.grid(column =0, row =4)
+kid_label = tk.Label(root, text = "Kid Index (optional):")
+kid_label.grid(column=0, row=1, sticky="w", padx=5)
+kid_index_entry = tk.Entry(root, width=20)
+kid_index_entry.grid(column=1, row=1, sticky="ew", padx=5)
+
+status_label = tk.Label(root, fg = "red", text = "")
+status_label.grid(column=0, row=2, columnspan=2, sticky="w", padx=5, pady=(5,0))
+
+school_label = tk.Label(root, text="Select schools to process:")
+school_label.grid(column=0, row=3, columnspan=2, sticky="w", padx=5, pady=(10,0))
+
+school_frame = tk.Frame(root, bd=1, relief="sunken")
+school_frame.grid(column=0, row=4, columnspan=2, sticky="nsew", padx=5, pady=(0,10))
+
+school_canvas = tk.Canvas(school_frame, highlightthickness=0)
+school_canvas.pack(side="left", fill="both", expand=True)
+school_scrollbar = tk.Scrollbar(school_frame, orient="vertical", command=school_canvas.yview)
+school_scrollbar.pack(side="right", fill="y")
+school_canvas.configure(yscrollcommand=school_scrollbar.set)
+
+schools_inner_frame = tk.Frame(school_canvas)
+school_canvas.create_window((0,0), window=schools_inner_frame, anchor="nw")
+
+def _configure_schools_frame(event):
+    school_canvas.configure(scrollregion=school_canvas.bbox("all"))
+
+schools_inner_frame.bind("<Configure>", _configure_schools_frame)
+
 options = ["440X290", "380X255", "420X290", "420X297", "297X210"]
 selected_size = tk.StringVar()
-lbl2 = tk.Label(root, fg = "red", text = "")
-lbl2.grid(column =1, row =5)
+
+size_label = tk.Label(root, text="Select a size from dropdown")
+size_label.grid(column=0, row=5, sticky="w", padx=5)
+
+size_dropdown = tk.OptionMenu(root, selected_size, *options)
+size_dropdown.grid(column=1, row=5, sticky="ew", padx=5)
+
+size_info_label = tk.Label(root, fg = "blue", text = "")
+size_info_label.grid(column=0, row=6, columnspan=2, sticky="w", padx=5)
+
+
 def display_size(*args):
     size = selected_size.get()
-    lbl2.configure(text=f"Selected Size: {size} mm")
+    if size_info_label is not None:
+        size_info_label.configure(text=f"Selected Size: {size} mm")
     width, height = map(int, size.split('X'))
     global Input
-    Input=(width*2.83465,height*2.83465) 
-selected_size.set("420X290") 
+    Input=(width*2.83465,height*2.83465)
+
+
+selected_size.set("420X290")
 selected_size.trace_add("write", display_size)
+
+
 def display_scale(*args):
-   
+
    scale=selected_scale.get()
    global page_scale
    page_scale=int(scale)
-   lbl3.configure(text=f"selected scale is {scale}")
+   if scale_info_label is not None:
+      scale_info_label.configure(text=f"Selected scale is {scale}%")
 
- 
-size_dropdown = tk.OptionMenu(root, selected_size, *options)
-size_dropdown.grid(column =1, row =4)
-size=selected_size.get()
-lbl3=tk.Label(root,fg="red",text="")
-lbl3.grid(column=1,row=7)
 
-scale=tk.Label(root,text="Select a scale from dropdown in %")
-scale.grid(column =0, row =6)
+scale_label=tk.Label(root,text="Select a scale from dropdown in %")
+scale_label.grid(column=0, row=7, sticky="w", padx=5)
 scale_options=[50,60,70,80,90,100]
 selected_scale=tk.StringVar()
 selected_scale.trace_add("write", display_scale)
-selected_scale .set(100)  
+selected_scale.set(100)
 
 scale_dropdown = tk.OptionMenu(root, selected_scale, *scale_options)
-scale_dropdown.grid(column =1, row =6)
+scale_dropdown.grid(column=1, row=7, sticky="ew", padx=5)
+
+scale_info_label=tk.Label(root,fg="red",text="")
+scale_info_label.grid(column=0,row=8,columnspan=2,sticky="w",padx=5)
+
+display_scale()
+
 
 button3=Button(root, text="DONE", command=windowDialog)
-button3.grid(column =1, row =3,pady=10)
-
-
-
-checkVar3=tk.IntVar(value=0)
-
-cv_page_button=tk.Checkbutton(root,var=checkVar3,text="Cover Page",height=5)
-cv_page_button.grid(row=10, column=1)
-checkVar4=tk.IntVar(value=0)
-
-
-
-Ip_button=tk.Checkbutton(root,var=checkVar4,text="Inner Pages",height=5)
-Ip_button.grid(row=11, column=1)
-
-
+button3.grid(column=0, row=9, columnspan=2, pady=(10,5))
 
 
 CheckVar1 = IntVar()
 C1 = tk.Checkbutton(root, text = "SKIP FORM", variable = CheckVar1, \
-                 onvalue = 1, offvalue = 0, height=5, \
+                 onvalue = 1, offvalue = 0, height=2, \
                  width = 20)
-C1.grid(column =1, row =8)
+C1.grid(column =0, row =10, columnspan=2, sticky="w", padx=5)
 
 
 CheckVar2 = IntVar()
 C2 = tk.Checkbutton(root, text = "OLD FORM", variable = CheckVar2, \
-                 onvalue = 1, offvalue = 0, height=5, \
+                 onvalue = 1, offvalue = 0, height=2, \
                  width = 20)
-C2.grid(column =1, row =9)
+C2.grid(column =0, row =11, columnspan=2, sticky="w", padx=5)
+
+
+checkVar3=tk.IntVar(value=0)
+
+cv_page_button=tk.Checkbutton(root,var=checkVar3,text="Cover Page",height=2)
+cv_page_button.grid(row=12, column=0, columnspan=2, sticky="w", padx=5)
+checkVar4=tk.IntVar(value=0)
+
+
+
+Ip_button=tk.Checkbutton(root,var=checkVar4,text="Inner Pages",height=2)
+Ip_button.grid(row=13, column=0, columnspan=2, sticky="w", padx=5)
 
 if __name__=="__main__":
    
