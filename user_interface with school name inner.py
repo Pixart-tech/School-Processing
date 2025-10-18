@@ -58,6 +58,21 @@ status_label = None
 size_info_label = None
 scale_info_label = None
 
+
+def set_status_message(message: str, color: str = "green") -> None:
+   """Safely update the status label from any thread."""
+   if status_label is None:
+      return
+
+   def _update() -> None:
+      status_label.configure(text=message, fg=color)
+
+   try:
+      status_label.after(0, _update)
+   except RuntimeError:
+      # The widget may have been destroyed during shutdown.
+      pass
+
 def storeDocs2(subject):
    
    
@@ -386,6 +401,8 @@ def make(dum):
         
          
    
+   cover_pages_created = 0
+
    if checkVar3.get()==1:
       
       if not os.path.isdir("store"):
@@ -445,6 +462,7 @@ def make(dum):
          photo_name = item["user_id"]
          
          dc.personalize(item["outer_code"], photo_name , item["school_id"],school_color_code1,school_color_code2,grade_colour_code,kid_color_code1,kid_color_code2,item["first_name"]+" "+item["last_name"],str(item["book_id"]).zfill(3),item,sheet_has_multiple_schools)
+         cover_pages_created += 1
    
    if checkVar4.get()==1:
       for key,item in data.items():
@@ -463,7 +481,98 @@ def make(dum):
       else:
          storeDocs(prev, subjectIDX[prev], item["school_name"])
 
- 
+   if checkVar3.get()==1:
+      if cover_pages_created:
+         set_status_message("Cover pages generated.", "green")
+      else:
+         set_status_message("No cover pages generated.", "red")
+
+
+def _merge_cover_pages_worker() -> None:
+   cover_root = "finalcovers"
+   if not os.path.isdir(cover_root):
+      set_status_message("No cover pages available to merge.", "red")
+      return
+
+   set_status_message("Merging cover pages...", "blue")
+
+   os.makedirs("Binders for Print", exist_ok=True)
+   os.makedirs("Binders for Verification", exist_ok=True)
+
+   created_count = 0
+
+   for entry in sorted(os.listdir(cover_root)):
+      source_dir = os.path.join(cover_root, entry)
+      if not os.path.isdir(source_dir):
+         continue
+
+      pdf_files = [
+         file
+         for file in sorted(os.listdir(source_dir))
+         if file.lower().endswith(".pdf")
+      ]
+
+      if not pdf_files:
+         continue
+
+      if "_" in entry:
+         school_name = entry.split("_", 1)[1] or entry
+      else:
+         school_name = entry
+
+      if hasattr(dc, "_sanitize_for_path"):
+         safe_name = dc._sanitize_for_path(school_name, "School")
+      else:
+         safe_name = school_name
+
+      if not safe_name:
+         safe_name = "School"
+
+      print_dir = os.path.join("Binders for Print", safe_name)
+      verification_dir = os.path.join("Binders for Verification", safe_name)
+      os.makedirs(print_dir, exist_ok=True)
+      os.makedirs(verification_dir, exist_ok=True)
+
+      binder_filename = f"{safe_name}_binder.pdf"
+      binder_print_path = os.path.join(print_dir, binder_filename)
+
+      combined = fitz.open()
+      try:
+         for pdf_file in pdf_files:
+            pdf_path = os.path.join(source_dir, pdf_file)
+            with fitz.open(pdf_path) as src:
+               combined.insert_pdf(src)
+         combined.save(binder_print_path)
+      finally:
+         combined.close()
+
+      verification_path = os.path.join(verification_dir, binder_filename)
+      with fitz.open(binder_print_path) as merged_doc:
+         verification_doc = fitz.open()
+         try:
+            matrix = fitz.Matrix(100 / 72, 100 / 72)
+            for page in merged_doc:
+               pix = page.get_pixmap(matrix=matrix, alpha=False)
+               width_pt = pix.width * 72 / 100
+               height_pt = pix.height * 72 / 100
+               new_page = verification_doc.new_page(width=width_pt, height=height_pt)
+               new_page.insert_image(new_page.rect, stream=pix.tobytes("png"))
+            verification_doc.save(verification_path)
+         finally:
+            verification_doc.close()
+
+      created_count += 1
+
+   if created_count:
+      set_status_message(f"Merged cover pages for {created_count} school(s).", "green")
+   else:
+      set_status_message("No cover pages found to merge.", "red")
+
+
+def merge_cover_pages() -> None:
+   _thread.start_new_thread(_merge_cover_pages_worker, tuple())
+
+
 # root window title and dimension
 root.title("Processing UI")
 # Set geometry(widthxheight)
@@ -587,7 +696,10 @@ checkVar4=tk.IntVar(value=0)
 Ip_button=tk.Checkbutton(root,var=checkVar4,text="Inner Pages",height=2)
 Ip_button.grid(row=13, column=0, columnspan=2, sticky="w", padx=5)
 
+merge_button = tk.Button(root, text="Merge PDF", command=merge_cover_pages)
+merge_button.grid(column=0, row=14, columnspan=2, pady=(10,5))
+
 if __name__=="__main__":
-   
+
    root.mainloop()
 
