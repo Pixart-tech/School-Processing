@@ -10,6 +10,7 @@ from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
 from xml.dom.minidom import Document, Element, parse
 
 from doc_maker import callInkscape
+from PIL import ImageFont
 
 
 DEFAULT_TEMPLATE_ROOT = Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL ID CARD SRC")
@@ -129,7 +130,49 @@ def _adjust_font_size(element: Element, text_length: int, max_characters: Option
 
 
 def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
+    group_id = group.getAttribute("id").lower() if group.hasAttribute("id") else ""
+    center_aligned_ids = {"name", "fname", "mname", "fcontact", "mcontact"}
+
+    def _parse_font_size(element: Element) -> float:
+        style = element.getAttribute("style")
+        match = FONT_SIZE_PATTERN.search(style)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                return 12.0
+        return 12.0
+
+    def _measure_text_width(value: str, font_size: float) -> float:
+        if not value:
+            return 0.0
+        try:
+            font = ImageFont.truetype("arial.ttf", max(1, int(round(font_size))))
+            return float(font.getlength(value))
+        except (OSError, ValueError):
+            return len(value) * font_size * 0.5
+
     for text_element in group.getElementsByTagName("text"):
+        old_text = "".join(
+            child.data
+            for child in text_element.childNodes
+            if getattr(child, "data", None)
+        )
+        font_size = _parse_font_size(text_element)
+        old_width = _measure_text_width(old_text, font_size)
+        new_width = _measure_text_width(text, font_size)
+
+        if group_id in center_aligned_ids:
+            x_attr = text_element.getAttribute("x") if text_element.hasAttribute("x") else ""
+            try:
+                x_value = float(x_attr.split()[0]) if x_attr else None
+            except ValueError:
+                x_value = None
+            if x_value is not None:
+                x_value += (old_width - new_width) / 2.0
+                text_element.setAttribute("x", str(x_value))
+            text_element.setAttribute("text-anchor", "middle")
+
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
 
