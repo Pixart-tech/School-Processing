@@ -195,7 +195,11 @@ def _copy_photo(source: Path, destination_dir: Path) -> Optional[str]:
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / source.name
     shutil.copyfile(source, destination)
-    return destination.name
+    try:
+        relative_path = destination.relative_to(destination_dir.parent)
+    except ValueError:
+        return destination.name
+    return relative_path.as_posix()
 
 
 def _prepare_working_directory(template_dir: Path, working_dir: Path) -> None:
