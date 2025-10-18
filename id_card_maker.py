@@ -1,18 +1,19 @@
 """Utilities for generating personalised ID card PDFs from SVG templates."""
 from __future__ import annotations
-
+import argparse
+import csv
 import math
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
 from xml.dom.minidom import Document, Element, parse
 
 from doc_maker import callInkscape
 
 
-DEFAULT_TEMPLATE_ROOT = Path(r"\\pixartnas\home\ID CARDS")
-DEFAULT_OUTPUT_ROOT = Path("ID_CARDS")
+DEFAULT_TEMPLATE_ROOT = Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL ID CARD SRC")
+DEFAULT_OUTPUT_ROOT = Path("ID Cards")
 DEFAULT_PHOTO_ROOT = Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL_PHOTOS")
 
 
@@ -37,6 +38,31 @@ def _normalise_string(value: object, default: str = "") -> str:
 
 def _ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _sanitize_filename_component(value: str, fallback: str) -> str:
+    value = _normalise_string(value)
+    if not value:
+        value = fallback
+    sanitized = re.sub(r"[^A-Za-z0-9]+", "_", value)
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+    return sanitized or fallback
+
+
+def _build_child_output_base(first_name: str, last_name: str, school_name: str) -> str:
+    parts = []
+    if first_name:
+        parts.append(_sanitize_filename_component(first_name, "student"))
+    else:
+        parts.append("student")
+    if last_name:
+        parts.append(_sanitize_filename_component(last_name, ""))
+    if school_name:
+        parts.append(_sanitize_filename_component(school_name, "school"))
+    else:
+        parts.append("school")
+    base = "_".join(part for part in parts if part)
+    return base or "student_school"
 
 
 _title_case_regex = re.compile(r"\b\w+\b")
@@ -229,29 +255,33 @@ def personalize_id_card(
     if not school_name_raw:
         return False
 
+    school_id = _normalise_string(record.get("school_id"))
+    if not school_id:
+        return False
+
     user_id = _normalise_string(record.get("user_id"))
     if not user_id:
         return False
 
-    template_dir = template_root / school_name_raw
+    template_dir = template_root / school_id
     if not template_dir.exists():
-        raise TemplateNotFoundError(f"Template directory not found for school: {school_name_raw}")
+        raise TemplateNotFoundError(f"Template directory not found for school: {school_id}")
 
     front_template = _find_template_file(template_dir, "FRONT")
     back_template = _find_template_file(template_dir, "BACK")
     if front_template is None and back_template is None:
         raise TemplateNotFoundError(f"No SVG templates found for school: {school_name_raw}")
 
-    school_folder_name = dc_sanitize(school_name_raw)
+    first_name = _normalise_string(record.get("first_name"))
+    last_name = _normalise_string(record.get("last_name"))
+    child_output_base = _build_child_output_base(first_name, last_name, school_name_raw)
 
-    svg_output_dir = output_root / "SVG" / school_folder_name / user_id
-    pdf_output_dir = output_root / "PDF" / school_folder_name
-    photos_output_dir = svg_output_dir / "images"
+    school_output_dir = output_root / school_id
+    child_output_dir = school_output_dir / child_output_base
+    photos_output_dir = child_output_dir / "working" / "images"
 
-    _ensure_directory(svg_output_dir)
-    _ensure_directory(pdf_output_dir)
-
-    working_dir = svg_output_dir
+    _ensure_directory(child_output_dir)
+    working_dir = child_output_dir / "working"
     _prepare_working_directory(template_dir, working_dir)
 
     class_name = _normalise_string(record.get("class_name")).upper()
@@ -301,7 +331,8 @@ def personalize_id_card(
         mother_contact = guardian_2_mobile or mother_contact
         mother_photo_id = guardian_2_id or mother_photo_id
 
-    full_name = custom_title_case(f"{_normalise_string(record.get('first_name'))} {_normalise_string(record.get('last_name'))}").strip()
+    full_name_parts = [part for part in (first_name, last_name) if part]
+    full_name = custom_title_case(" ".join(full_name_parts)).strip()
 
     school_branch = clean_branch_name(school_name_raw)
 
@@ -357,14 +388,14 @@ def personalize_id_card(
     if front_template is not None:
         front_svg_path = working_dir / front_template.name
         _process_svg(front_svg_path, text_updates_front, image_updates_front, address_updates_front)
-        front_pdf_path = pdf_output_dir / f"{user_id}_1.pdf"
+        front_pdf_path = child_output_dir / f"{child_output_base}_FRONT.pdf"
         callInkscape(str(front_svg_path), str(front_pdf_path))
         generated = True
 
     if back_template is not None:
         back_svg_path = working_dir / back_template.name
         _process_svg(back_svg_path, text_updates_back, image_updates_back, address_updates_back)
-        back_pdf_path = pdf_output_dir / f"{user_id}_2.pdf"
+        back_pdf_path = child_output_dir / f"{child_output_base}_BACK.pdf"
         callInkscape(str(back_svg_path), str(back_pdf_path))
         generated = True
 
@@ -377,13 +408,86 @@ def dc_sanitize(value: str) -> str:
     return _sanitize_for_path(value, "School")
 
 
-def generate_id_cards(records: Iterable[Dict[str, object]]) -> int:
+def generate_id_cards(
+    records: Iterable[Dict[str, object]],
+    *,
+    template_root: Path = DEFAULT_TEMPLATE_ROOT,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    photo_root: Path = DEFAULT_PHOTO_ROOT,
+) -> int:
     count = 0
     for record in records:
         try:
-            if personalize_id_card(record):
+            if personalize_id_card(
+                record,
+                template_root=template_root,
+                output_root=output_root,
+                photo_root=photo_root,
+            ):
                 count += 1
         except TemplateNotFoundError as exc:
             print(exc)
             continue
     return count
+
+
+def load_records_from_csv(csv_path: Path) -> Iterator[Dict[str, str]]:
+    with csv_path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            yield row
+
+
+def generate_id_cards_from_csv(
+    csv_path: Path,
+    *,
+    template_root: Path = DEFAULT_TEMPLATE_ROOT,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    photo_root: Path = DEFAULT_PHOTO_ROOT,
+) -> int:
+    return generate_id_cards(
+        load_records_from_csv(csv_path),
+        template_root=template_root,
+        output_root=output_root,
+        photo_root=photo_root,
+    )
+
+
+def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate ID cards from a CSV input sheet.")
+    parser.add_argument("csv_path", type=Path, help="Path to the CSV file containing ID card data")
+    parser.add_argument(
+        "--template-root",
+        type=Path,
+        default=DEFAULT_TEMPLATE_ROOT,
+        help="Directory containing per-school SVG templates",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=DEFAULT_OUTPUT_ROOT,
+        help="Directory where generated ID cards will be written",
+    )
+    parser.add_argument(
+        "--photo-root",
+        type=Path,
+        default=DEFAULT_PHOTO_ROOT,
+        help="Directory containing student and guardian photos",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = _parse_args(argv)
+    count = generate_id_cards_from_csv(
+        args.csv_path,
+        template_root=args.template_root,
+        output_root=args.output_root,
+        photo_root=args.photo_root,
+    )
+    print(f"Generated {count} ID card(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
