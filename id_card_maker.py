@@ -97,48 +97,124 @@ def _set_text(element: Element, text: str) -> None:
     element.appendChild(element.ownerDocument.createTextNode(text))
 
 
-def _adjust_font_size(element: Element, text_length: int, max_characters: Optional[int], reduction: float) -> None:
-    if max_characters is None or reduction <= 0:
-        return
-    overflow = text_length - max_characters
-    if overflow <= 0:
-        return
+_MAX_CHAR_ATTRS = (
+    "data-max-characters",
+    "data-max-char",
+    "data-max-length",
+    "data-max",
+    "max-characters",
+    "max-char",
+    "max-length",
+    "max",
+)
 
-    style = element.getAttribute("style")
+
+def _extract_font_size(style: str) -> Optional[float]:
     match = FONT_SIZE_PATTERN.search(style)
     if match:
         try:
-            base_size = float(match.group(1))
+            return float(match.group(1))
         except ValueError:
-            base_size = None
-    else:
-        base_size = None
+            return None
+    return None
 
+
+def _update_font_size_style(style: str, new_size: float) -> str:
+    if FONT_SIZE_PATTERN.search(style):
+        return FONT_SIZE_PATTERN.sub(f"font-size:{new_size}px", style)
+    if style and not style.endswith(";"):
+        style += ";"
+    return style + f"font-size:{new_size}px"
+
+
+def _get_max_characters(element: Element, fallback: Optional[int]) -> Optional[int]:
+    for attribute in _MAX_CHAR_ATTRS:
+        if element.hasAttribute(attribute):
+            value = element.getAttribute(attribute).strip()
+            if not value:
+                continue
+            try:
+                parsed = int(float(value))
+            except ValueError:
+                continue
+            if parsed > 0:
+                return parsed
+    return fallback if fallback and fallback > 0 else None
+
+
+def _adjust_font_size(
+    element: Element,
+    text_length: int,
+    max_characters: Optional[int],
+    reduction: float,
+) -> None:
+    if max_characters is None or text_length <= max_characters:
+        return
+
+    style = element.getAttribute("style")
+    base_size = _extract_font_size(style)
     if base_size is None:
         # Default to a conservative font size if not specified.
         base_size = 12.0
 
-    new_size = max(base_size - reduction * overflow, 1.0)
-    if match:
-        style = FONT_SIZE_PATTERN.sub(f"font-size:{new_size}px", style)
+    scale = max_characters / float(text_length)
+    new_size = max(base_size * scale, 1.0)
+    element.setAttribute("style", _update_font_size_style(style, new_size))
+
+
+def _set_text_alignment(element: Element, alignment: Optional[str]) -> None:
+    if alignment not in {"middle", "start", "end"}:
+        return
+    style = element.getAttribute("style")
+    # Normalise spacing to allow easy replacement.
+    if "text-anchor" in style:
+        style = re.sub(r"text-anchor\s*:\s*[^;]+", f"text-anchor:{alignment}", style)
     else:
         if style and not style.endswith(";"):
             style += ";"
-        style += f"font-size:{new_size}px"
+        style += f"text-anchor:{alignment}"
     element.setAttribute("style", style)
 
 
-def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
+TEXT_ALIGNMENT_OVERRIDES = {
+    "name": "middle",
+    "fname": "middle",
+    "mname": "middle",
+    "fcontact": "middle",
+    "mcontact": "middle",
+    "grade": "start",
+    "address": "start",
+    "address2": "start",
+}
+
+
+def _update_text_group(
+    group: Element,
+    text: str,
+    *,
+    max_characters: Optional[int] = None,
+    reduction: float = 0.0,
+    alignment: Optional[str] = None,
+) -> None:
     for text_element in group.getElementsByTagName("text"):
+        element_alignment = alignment or TEXT_ALIGNMENT_OVERRIDES.get(
+            group.getAttribute("id").lower() if group.hasAttribute("id") else ""
+        )
+        _set_text_alignment(text_element, element_alignment)
         _set_text(text_element, text)
-        _adjust_font_size(text_element, len(text), max_characters, reduction)
+        element_max_characters = _get_max_characters(text_element, max_characters)
+        _adjust_font_size(text_element, len(text), element_max_characters, reduction)
 
 
-def _update_address_group(group: Element, text: str) -> None:
+def _update_address_group(group: Element, text: str, *, alignment: Optional[str] = None) -> None:
     lines = [line.strip() for line in text.replace("\r", "").split("\n") if line.strip()]
     if not lines:
         lines = [""]
     for text_element in group.getElementsByTagName("text"):
+        element_alignment = alignment or TEXT_ALIGNMENT_OVERRIDES.get(
+            group.getAttribute("id").lower() if group.hasAttribute("id") else ""
+        )
+        _set_text_alignment(text_element, element_alignment or "start")
         while text_element.firstChild:
             text_element.removeChild(text_element.firstChild)
 
@@ -219,13 +295,21 @@ def _process_svg(svg_path: Path, updates: Dict[str, Tuple[str, Optional[int], fl
         group = group_map.get(group_id)
         if group is None:
             continue
-        _update_text_group(group, text, max_characters=max_chars, reduction=reduction)
+        alignment = TEXT_ALIGNMENT_OVERRIDES.get(group_id)
+        _update_text_group(
+            group,
+            text,
+            max_characters=max_chars,
+            reduction=reduction,
+            alignment=alignment,
+        )
 
     for group_id, text in address_updates.items():
         group = group_map.get(group_id)
         if group is None:
             continue
-        _update_address_group(group, text)
+        alignment = TEXT_ALIGNMENT_OVERRIDES.get(group_id)
+        _update_address_group(group, text, alignment=alignment)
 
     for group_id, image_name in image_updates.items():
         if not image_name:
