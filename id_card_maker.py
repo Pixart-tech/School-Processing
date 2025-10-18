@@ -90,17 +90,6 @@ def clean_branch_name(value: str) -> str:
 
 FONT_SIZE_PATTERN = re.compile(r"font-size\s*:\s*([0-9.]+)px", re.IGNORECASE)
 
-_GROUP_ALIGNMENT: Dict[str, str] = {
-    "name": "center",
-    "fname": "center",
-    "mname": "center",
-    "fcontact": "center",
-    "mcontact": "center",
-    "grade": "left",
-    "address": "left",
-    "address2": "left",
-}
-
 
 def _set_text(element: Element, text: str) -> None:
     while element.firstChild:
@@ -108,148 +97,48 @@ def _set_text(element: Element, text: str) -> None:
     element.appendChild(element.ownerDocument.createTextNode(text))
 
 
-def _extract_font_size(style: str) -> Optional[float]:
-    match = FONT_SIZE_PATTERN.search(style)
-    if not match:
-        return None
-    try:
-        return float(match.group(1))
-    except ValueError:
-        return None
-
-
-def _apply_font_size(style: str, font_size: float) -> str:
-    if FONT_SIZE_PATTERN.search(style):
-        return FONT_SIZE_PATTERN.sub(f"font-size:{font_size}px", style)
-    cleaned = style.strip()
-    if cleaned and not cleaned.endswith(";"):
-        cleaned += ";"
-    return f"{cleaned}font-size:{font_size}px"
-
-
-def _adjust_font_size(
-    element: Element,
-    text_length: int,
-    max_characters: Optional[int],
-    reduction: float,
-) -> float:
+def _adjust_font_size(element: Element, text_length: int, max_characters: Optional[int], reduction: float) -> None:
     if max_characters is None or reduction <= 0:
-        current_style = element.getAttribute("style")
-        font_size = _extract_font_size(current_style)
-        return font_size if font_size is not None else 12.0
-
+        return
     overflow = text_length - max_characters
-    current_style = element.getAttribute("style")
-    base_size = _extract_font_size(current_style)
+    if overflow <= 0:
+        return
+
+    style = element.getAttribute("style")
+    match = FONT_SIZE_PATTERN.search(style)
+    if match:
+        try:
+            base_size = float(match.group(1))
+        except ValueError:
+            base_size = None
+    else:
+        base_size = None
+
     if base_size is None:
         # Default to a conservative font size if not specified.
         base_size = 12.0
 
-    if overflow <= 0:
-        element.setAttribute("style", _apply_font_size(current_style, base_size))
-        return base_size
-
     new_size = max(base_size - reduction * overflow, 1.0)
-    element.setAttribute("style", _apply_font_size(current_style, new_size))
-    return new_size
+    if match:
+        style = FONT_SIZE_PATTERN.sub(f"font-size:{new_size}px", style)
+    else:
+        if style and not style.endswith(";"):
+            style += ";"
+        style += f"font-size:{new_size}px"
+    element.setAttribute("style", style)
 
 
-def _get_group_rect(group: Element) -> Optional[Element]:
-    rects = group.getElementsByTagName("rect")
-    for index in range(rects.length):
-        rect = rects.item(index)
-        if rect is not None and rect.hasAttribute("width"):
-            return rect
-    return None
-
-
-def _parse_float(value: str) -> Optional[float]:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _compute_alignment_x(rect: Optional[Element], alignment: str) -> Optional[float]:
-    if rect is None:
-        return None
-    x_value = _parse_float(rect.getAttribute("x")) or 0.0
-    width_value = _parse_float(rect.getAttribute("width"))
-    if width_value is None:
-        return x_value
-    if alignment == "center":
-        return x_value + width_value / 2.0
-    if alignment == "left":
-        return x_value
-    return x_value
-
-
-def _apply_alignment(text_element: Element, rect: Optional[Element], alignment: Optional[str]) -> None:
-    if not alignment:
-        return
-    if alignment == "center":
-        text_element.setAttribute("text-anchor", "middle")
-    elif alignment == "left":
-        text_element.setAttribute("text-anchor", "start")
-
-    x_position = _compute_alignment_x(rect, alignment)
-    if x_position is not None:
-        text_element.setAttribute("x", f"{x_position}")
-
-
-def _estimate_text_width(content: str, font_size: float) -> float:
-    if not content:
-        return 0.0
-    longest_line = max((line for line in content.split("\n")), key=len, default="")
-    # Approximate average glyph width as 0.6 of the font size.
-    return len(longest_line) * font_size * 0.6
-
-
-def _shrink_text_to_rect(
-    text_element: Element,
-    rect: Optional[Element],
-    content: str,
-    font_size: float,
-) -> None:
-    if rect is None or not content.strip():
-        return
-    width_value = _parse_float(rect.getAttribute("width"))
-    if width_value is None or width_value <= 0:
-        return
-
-    estimated_width = _estimate_text_width(content, font_size)
-    if estimated_width <= 0 or estimated_width <= width_value:
-        return
-
-    scale = width_value / estimated_width
-    new_size = max(font_size * scale, 1.0)
-    current_style = text_element.getAttribute("style")
-    text_element.setAttribute("style", _apply_font_size(current_style, new_size))
-
-
-def _update_text_group(
-    group: Element,
-    text: str,
-    *,
-    max_characters: Optional[int] = None,
-    reduction: float = 0.0,
-    alignment: Optional[str] = None,
-) -> None:
-    rect = _get_group_rect(group)
+def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
     for text_element in group.getElementsByTagName("text"):
-        _apply_alignment(text_element, rect, alignment)
         _set_text(text_element, text)
-        font_size = _adjust_font_size(text_element, len(text), max_characters, reduction)
-        _shrink_text_to_rect(text_element, rect, text, font_size)
+        _adjust_font_size(text_element, len(text), max_characters, reduction)
 
 
-def _update_address_group(group: Element, text: str, alignment: Optional[str] = None) -> None:
+def _update_address_group(group: Element, text: str) -> None:
     lines = [line.strip() for line in text.replace("\r", "").split("\n") if line.strip()]
     if not lines:
         lines = [""]
-    rect = _get_group_rect(group)
     for text_element in group.getElementsByTagName("text"):
-        _apply_alignment(text_element, rect, alignment)
         while text_element.firstChild:
             text_element.removeChild(text_element.firstChild)
 
@@ -269,9 +158,6 @@ def _update_address_group(group: Element, text: str, alignment: Optional[str] = 
             tspan.setAttribute("dy", "1em")
             tspan.appendChild(document.createTextNode(line))
             text_element.appendChild(tspan)
-
-        font_size = _adjust_font_size(text_element, len("".join(lines)), None, 0.0)
-        _shrink_text_to_rect(text_element, rect, "\n".join(lines), font_size)
 
 
 def _find_group_map(doc: Document) -> Dict[str, Element]:
@@ -329,26 +215,17 @@ def _process_svg(svg_path: Path, updates: Dict[str, Tuple[str, Optional[int], fl
     doc = parse(str(svg_path))
     group_map = _find_group_map(doc)
 
-    for group_id, update in updates.items():
+    for group_id, (text, max_chars, reduction) in updates.items():
         group = group_map.get(group_id)
         if group is None:
             continue
-        text, max_chars, reduction = update
-        alignment = _GROUP_ALIGNMENT.get(group_id)
-        _update_text_group(
-            group,
-            text,
-            max_characters=max_chars,
-            reduction=reduction,
-            alignment=alignment,
-        )
+        _update_text_group(group, text, max_characters=max_chars, reduction=reduction)
 
     for group_id, text in address_updates.items():
         group = group_map.get(group_id)
         if group is None:
             continue
-        alignment = _GROUP_ALIGNMENT.get(group_id)
-        _update_address_group(group, text, alignment=alignment)
+        _update_address_group(group, text)
 
     for group_id, image_name in image_updates.items():
         if not image_name:
