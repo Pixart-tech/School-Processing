@@ -23,6 +23,7 @@ import os
 
 
 import doc_maker,dc
+import id_card_maker
 import util
 
 global Input
@@ -39,6 +40,7 @@ if not os.path.isdir("finalcovers"):
    
 folder = ""
 file = ""
+id_card_file = ""
 
 
 if os.path.isdir("STICKERS")==False:
@@ -240,8 +242,8 @@ def storePS (tuple, prev, subDict):
 
 
 
-def populate_school_checkboxes():
-   global school_vars, schools_inner_frame, school_canvas, status_label
+def populate_school_checkboxes(sheet_path: Optional[str] = None):
+   global school_vars, schools_inner_frame, school_canvas, status_label, file, id_card_file
 
    if schools_inner_frame is None:
       return
@@ -251,29 +253,41 @@ def populate_school_checkboxes():
 
    school_vars = []
 
-   if file == "":
+   paths_to_scan = []
+   if sheet_path:
+      paths_to_scan.append(sheet_path)
+   if file and file not in paths_to_scan:
+      paths_to_scan.append(file)
+   if id_card_file and id_card_file not in paths_to_scan:
+      paths_to_scan.append(id_card_file)
+
+   if not paths_to_scan:
       return
 
-   try:
-      df = pd.read_excel(file, header=0)
-   except Exception as exc:
-      if status_label is not None:
-         status_label.configure(fg="red", text=f"Failed to load schools: {exc}")
-      return
+   schools = set()
+   for path in paths_to_scan:
+      try:
+         df = pd.read_excel(path, header=0)
+      except Exception as exc:
+         print(f"Failed to read '{path}': {exc}")
+         continue
 
-   if "school_name" not in df.columns:
-      if status_label is not None:
-         status_label.configure(fg="red", text="Column 'school_name' not found in sheet.")
-      return
+      if "school_name" not in df.columns:
+         continue
 
-   schools = sorted({str(name).strip() for name in df["school_name"] if pd.notna(name) and str(name).strip() != ""})
+      names = {
+         str(name).strip()
+         for name in df["school_name"].dropna()
+         if str(name).strip() != ""
+      }
+      schools.update(names)
 
    if not schools:
       if status_label is not None:
-         status_label.configure(fg="red", text="No schools found in sheet.")
+         status_label.configure(fg="red", text="No schools found in selected sheets.")
       return
 
-   for name in schools:
+   for name in sorted(schools):
       var = tk.IntVar(value=0)
       chk = tk.Checkbutton(schools_inner_frame, text=name, variable=var, anchor="w", justify="left")
       chk.pack(fill="x", anchor="w")
@@ -292,7 +306,15 @@ def open_win_diag():
    file=filedialog.askopenfilename(initialdir="E:/winapp")
 
    if file:
-      populate_school_checkboxes()
+      populate_school_checkboxes(file)
+
+
+def open_id_card_diag():
+   global id_card_file
+   id_card_file = filedialog.askopenfilename(initialdir="E:/winapp")
+
+   if id_card_file:
+      populate_school_checkboxes(id_card_file)
 
 
 
@@ -308,23 +330,36 @@ def convert_cmyk_to_rgb(input_path, output_path):
 
 def make(dum):
    spine=0
-   global file,folder, school_vars, kid_index_entry, status_label, selected_size
-   if file == "" :
+   global file,folder, school_vars, kid_index_entry, status_label, selected_size, id_card_file
+
+   processing_books = checkVar3.get()==1 or checkVar4.get()==1
+   processing_id_cards = checkVar5.get()==1
+
+   if not processing_books and not processing_id_cards:
       if status_label is not None:
-         status_label.configure(fg="red", text = "ERROR SELECT EXCEL \nFILE AND FOLDER \nWTH PHOTOS" )
+         status_label.configure(fg="red", text="Select at least one processing option.")
+      return
+
+   if processing_books and file == "":
+      if status_label is not None:
+         status_label.configure(fg="red", text = "Select the book Excel file before processing.")
+      return
+
+   if processing_id_cards and id_card_file == "":
+      if status_label is not None:
+         status_label.configure(fg="red", text = "Select the ID card Excel file before processing.")
       return
 
    current_size = ""
    if 'selected_size' in globals() and selected_size is not None:
       current_size = selected_size.get()
 
-   if current_size == "":
+   if processing_books and current_size == "":
       if status_label is not None:
          status_label.configure(fg="red", text="ERROR SELECT A BOOKLET SIZE ")
       return
 
-
-   if os.path.isdir("FINAL BINDERS") == False:
+   if processing_books and os.path.isdir("FINAL BINDERS") == False:
       os.makedirs("FINAL BINDERS", exist_ok=True)
 
    kid_idx = ""
@@ -383,24 +418,25 @@ def make(dum):
       status_label.configure(text="", fg="red")
 
 
-   df = pd.read_excel(file, header=0)
+   data: Dict[Any, Dict[str, Any]] = {}
    sheet_has_multiple_schools = False
-   if "school_name" in df.columns:
-      cleaned_names = {
-         str(name).strip()
-         for name in df["school_name"].dropna()
-         if str(name).strip() != ""
-      }
-      sheet_has_multiple_schools = len(cleaned_names) > 1
-   data = df.to_dict('index')
-   subjectIDX = {}
+   subjectIDX: Dict[str, Dict[str, Any]] = {}
    prev = ""
-   
-   
-   colorcodes = ['#ff0000', '#00ff00', '#8F7C00' ,'#0000ff', '#993F00'  ,'#ffff00', '#00ffff', '#ff00ff', '#000000', '#888888', '#234567']
-        
-         
-   
+
+   colorcodes = ['#ff0000', '#00ff00', '#8F7C00' ,'#0000ff', '#993F00'  ,'#ffff00', '#00ffff', '#ff00ff', '#000000', '#888888',
+'#234567']
+
+   if processing_books:
+      df = pd.read_excel(file, header=0)
+      if "school_name" in df.columns:
+         cleaned_names = {
+            str(name).strip()
+            for name in df["school_name"].dropna()
+            if str(name).strip() != ""
+         }
+         sheet_has_multiple_schools = len(cleaned_names) > 1
+      data = df.to_dict('index')
+
    cover_pages_created = 0
 
    if checkVar3.get()==1:
@@ -481,11 +517,46 @@ def make(dum):
       else:
          storeDocs(prev, subjectIDX[prev], item["school_name"])
 
+   id_cards_created = 0
+   if processing_id_cards:
+      try:
+         id_df = pd.read_excel(id_card_file, header=0)
+      except Exception as exc:
+         if status_label is not None:
+            status_label.configure(fg="red", text=f"Failed to load ID card sheet: {exc}")
+         return
+
+      for record in id_df.to_dict("records"):
+         if not matches_selection(record):
+            continue
+
+         try:
+            if id_card_maker.personalize_id_card(record):
+               id_cards_created += 1
+         except id_card_maker.TemplateNotFoundError as exc:
+            print(exc)
+         except Exception as exc:
+            print(f"Failed to generate ID card for {record.get('user_id')}: {exc}")
+
+   status_messages = []
+   status_color = "green"
+
    if checkVar3.get()==1:
       if cover_pages_created:
-         set_status_message("Cover pages generated.", "green")
+         status_messages.append("Cover pages generated.")
       else:
-         set_status_message("No cover pages generated.", "red")
+         status_messages.append("No cover pages generated.")
+         status_color = "red"
+
+   if processing_id_cards:
+      if id_cards_created:
+         status_messages.append(f"Generated {id_cards_created} ID card(s).")
+      else:
+         status_messages.append("No ID cards generated.")
+         status_color = "red"
+
+   if status_messages:
+      set_status_message(" ".join(status_messages), status_color)
 
 
 def _merge_cover_pages_worker() -> None:
@@ -580,7 +651,7 @@ root.geometry('520x650')
 
 root.grid_columnconfigure(0, weight=1)
 root.grid_columnconfigure(1, weight=1)
-root.grid_rowconfigure(4, weight=1)
+root.grid_rowconfigure(5, weight=1)
 
 
 #_thread.start_new_thread(printOut, (0,))
@@ -588,19 +659,22 @@ root.grid_rowconfigure(4, weight=1)
 button=tk.Button(root, text="Open Excel Sheet", command=open_win_diag)
 button.grid(column=0, row=0, columnspan=2, pady=(10,5))
 
+id_button=tk.Button(root, text="Open ID Card Sheet", command=open_id_card_diag)
+id_button.grid(column=0, row=1, columnspan=2, pady=(0,5))
+
 kid_label = tk.Label(root, text = "Kid Index (optional):")
-kid_label.grid(column=0, row=1, sticky="w", padx=5)
+kid_label.grid(column=0, row=2, sticky="w", padx=5)
 kid_index_entry = tk.Entry(root, width=20)
-kid_index_entry.grid(column=1, row=1, sticky="ew", padx=5)
+kid_index_entry.grid(column=1, row=2, sticky="ew", padx=5)
 
 status_label = tk.Label(root, fg = "red", text = "")
-status_label.grid(column=0, row=2, columnspan=2, sticky="w", padx=5, pady=(5,0))
+status_label.grid(column=0, row=3, columnspan=2, sticky="w", padx=5, pady=(5,0))
 
 school_label = tk.Label(root, text="Select schools to process:")
-school_label.grid(column=0, row=3, columnspan=2, sticky="w", padx=5, pady=(10,0))
+school_label.grid(column=0, row=4, columnspan=2, sticky="w", padx=5, pady=(10,0))
 
 school_frame = tk.Frame(root, bd=1, relief="sunken")
-school_frame.grid(column=0, row=4, columnspan=2, sticky="nsew", padx=5, pady=(0,10))
+school_frame.grid(column=0, row=5, columnspan=2, sticky="nsew", padx=5, pady=(0,10))
 
 school_canvas = tk.Canvas(school_frame, highlightthickness=0)
 school_canvas.pack(side="left", fill="both", expand=True)
@@ -620,13 +694,13 @@ options = ["440X290", "380X255", "420X290", "420X297", "297X210"]
 selected_size = tk.StringVar()
 
 size_label = tk.Label(root, text="Select a size from dropdown")
-size_label.grid(column=0, row=5, sticky="w", padx=5)
+size_label.grid(column=0, row=6, sticky="w", padx=5)
 
 size_dropdown = tk.OptionMenu(root, selected_size, *options)
-size_dropdown.grid(column=1, row=5, sticky="ew", padx=5)
+size_dropdown.grid(column=1, row=6, sticky="ew", padx=5)
 
 size_info_label = tk.Label(root, fg = "blue", text = "")
-size_info_label.grid(column=0, row=6, columnspan=2, sticky="w", padx=5)
+size_info_label.grid(column=0, row=7, columnspan=2, sticky="w", padx=5)
 
 
 def display_size(*args):
@@ -652,52 +726,57 @@ def display_scale(*args):
 
 
 scale_label=tk.Label(root,text="Select a scale from dropdown in %")
-scale_label.grid(column=0, row=7, sticky="w", padx=5)
+scale_label.grid(column=0, row=8, sticky="w", padx=5)
 scale_options=[50,60,70,80,90,100]
 selected_scale=tk.StringVar()
 selected_scale.trace_add("write", display_scale)
 selected_scale.set(100)
 
 scale_dropdown = tk.OptionMenu(root, selected_scale, *scale_options)
-scale_dropdown.grid(column=1, row=7, sticky="ew", padx=5)
+scale_dropdown.grid(column=1, row=8, sticky="ew", padx=5)
 
 scale_info_label=tk.Label(root,fg="red",text="")
-scale_info_label.grid(column=0,row=8,columnspan=2,sticky="w",padx=5)
+scale_info_label.grid(column=0,row=9,columnspan=2,sticky="w",padx=5)
 
 display_scale()
 
 
 button3=Button(root, text="DONE", command=windowDialog)
-button3.grid(column=0, row=9, columnspan=2, pady=(10,5))
+button3.grid(column=0, row=10, columnspan=2, pady=(10,5))
 
 
 CheckVar1 = IntVar()
 C1 = tk.Checkbutton(root, text = "SKIP FORM", variable = CheckVar1, \
                  onvalue = 1, offvalue = 0, height=2, \
                  width = 20)
-C1.grid(column =0, row =10, columnspan=2, sticky="w", padx=5)
+C1.grid(column =0, row =11, columnspan=2, sticky="w", padx=5)
 
 
 CheckVar2 = IntVar()
 C2 = tk.Checkbutton(root, text = "OLD FORM", variable = CheckVar2, \
                  onvalue = 1, offvalue = 0, height=2, \
                  width = 20)
-C2.grid(column =0, row =11, columnspan=2, sticky="w", padx=5)
+C2.grid(column =0, row =12, columnspan=2, sticky="w", padx=5)
 
 
 checkVar3=tk.IntVar(value=0)
 
 cv_page_button=tk.Checkbutton(root,var=checkVar3,text="Cover Page",height=2)
-cv_page_button.grid(row=12, column=0, columnspan=2, sticky="w", padx=5)
+cv_page_button.grid(row=13, column=0, columnspan=2, sticky="w", padx=5)
 checkVar4=tk.IntVar(value=0)
 
 
 
 Ip_button=tk.Checkbutton(root,var=checkVar4,text="Inner Pages",height=2)
-Ip_button.grid(row=13, column=0, columnspan=2, sticky="w", padx=5)
+Ip_button.grid(row=14, column=0, columnspan=2, sticky="w", padx=5)
+
+checkVar5=tk.IntVar(value=0)
+
+id_cards_button=tk.Checkbutton(root, var=checkVar5, text="ID Cards", height=2)
+id_cards_button.grid(row=15, column=0, columnspan=2, sticky="w", padx=5)
 
 merge_button = tk.Button(root, text="Merge PDF", command=merge_cover_pages)
-merge_button.grid(column=0, row=14, columnspan=2, pady=(10,5))
+merge_button.grid(column=0, row=16, columnspan=2, pady=(10,5))
 
 if __name__=="__main__":
 
