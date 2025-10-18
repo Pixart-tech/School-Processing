@@ -442,31 +442,27 @@ def personalize(outer_code,photoFolder ,id,school_color_code1,school_color_code2
             
             open("Temp"+"/"+ str(outer_code)[:3]+"/"+bookid+".svg", "w", encoding="utf-8").write(cmmn_doc.toprettyxml())
 
-            output_dir = os.path.join("finalcovers")
-            output_name = f"{bookid}.pdf"
+            school_name_raw = tuple.get("school_name", "")
+            subject_name_raw = (
+                tuple.get("subject_name")
+                or tuple.get("subject")
+                or tuple.get("subjectname")
+                or ""
+            )
+            first_name_raw = tuple.get("first_name", "")
+            last_name_raw = tuple.get("last_name", "")
 
-            if multiple_schools:
-                school_name_raw = tuple.get("school_name", "")
-                subject_name_raw = (
-                    tuple.get("subject_name")
-                    or tuple.get("subject")
-                    or tuple.get("subjectname")
-                    or ""
-                )
-                first_name_raw = tuple.get("first_name", "")
-                last_name_raw = tuple.get("last_name", "")
+            school_name_clean = _sanitize_for_path(school_name_raw, "School")
+            subject_name_clean = _sanitize_for_path(subject_name_raw, "Subject")
+            first_name_clean = _sanitize_for_path(first_name_raw, "First")
+            last_name_clean = _sanitize_for_path(last_name_raw, "Last")
 
-                school_name_clean = _sanitize_for_path(school_name_raw, "School")
-                subject_name_clean = _sanitize_for_path(subject_name_raw, "Subject")
-                first_name_clean = _sanitize_for_path(first_name_raw, "First")
-                last_name_clean = _sanitize_for_path(last_name_raw, "Last")
+            output_dir = os.path.join("finalcovers", f"{str(outer_code)[:3]}_{school_name_clean}")
+            os.makedirs(output_dir, exist_ok=True)
 
-                folder_name = f"{str(outer_code)[:3]}_{school_name_clean}"
-                output_dir = os.path.join(output_dir, folder_name)
-                os.makedirs(output_dir, exist_ok=True)
-                output_name = f"{school_name_clean}_{outer_code}_{subject_name_clean}_{first_name_clean}_{last_name_clean}.pdf"
-            else:
-                os.makedirs(output_dir, exist_ok=True)
+            output_name = (
+                f"{school_name_clean}_{outer_code}_{subject_name_clean}_{first_name_clean}_{last_name_clean}.pdf"
+            )
 
             output_path = os.path.join(output_dir, output_name)
 
