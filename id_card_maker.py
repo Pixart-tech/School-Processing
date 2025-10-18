@@ -7,6 +7,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
+from PIL import ImageFont
 from xml.dom.minidom import Document, Element, parse
 
 from doc_maker import callInkscape
@@ -89,12 +90,32 @@ def clean_branch_name(value: str) -> str:
 
 
 FONT_SIZE_PATTERN = re.compile(r"font-size\s*:\s*([0-9.]+)px", re.IGNORECASE)
+FONT_FAMILY_PATTERN = re.compile(r"font-family\s*:\s*([^;]+)", re.IGNORECASE)
 
 
 def _set_text(element: Element, text: str) -> None:
     while element.firstChild:
         element.removeChild(element.firstChild)
     element.appendChild(element.ownerDocument.createTextNode(text))
+
+
+def _set_font_size(element: Element, font_size: float) -> None:
+    style = element.getAttribute("style") or ""
+    if FONT_SIZE_PATTERN.search(style):
+        style = FONT_SIZE_PATTERN.sub(f"font-size:{font_size}px", style)
+    else:
+        if style and not style.endswith(";"):
+            style += ";"
+        style += f"font-size:{font_size}px"
+    element.setAttribute("style", style)
+
+
+def _extract_font_family(element: Element) -> str:
+    style = element.getAttribute("style") or ""
+    match = FONT_FAMILY_PATTERN.search(style)
+    if match:
+        return match.group(1).strip().strip("\"'")
+    return ""
 
 
 def _adjust_font_size(element: Element, text_length: int, max_characters: Optional[int], reduction: float) -> None:
@@ -128,10 +149,71 @@ def _adjust_font_size(element: Element, text_length: int, max_characters: Option
     element.setAttribute("style", style)
 
 
+def _fit_text_within_rect(group: Element, element: Element, text: str, index: int) -> None:
+    rects = list(group.getElementsByTagName("rect"))
+    if not rects:
+        return
+
+    rect = rects[index] if index < len(rects) else rects[0]
+    width_attr = rect.getAttribute("width") if rect.hasAttribute("width") else ""
+    try:
+        rect_width = float(width_attr)
+    except (TypeError, ValueError):
+        return
+    if rect_width <= 0:
+        return
+
+    font_size_match = FONT_SIZE_PATTERN.search(element.getAttribute("style") or "")
+    if font_size_match:
+        try:
+            font_size = float(font_size_match.group(1))
+        except ValueError:
+            font_size = None
+    else:
+        font_size = None
+
+    if font_size is None:
+        font_size = 38.0
+
+    font_family = _extract_font_family(element)
+    font_path = Path(__file__).resolve().parent / "PlaypenSans-Medium.ttf"
+    if "Marvin" in font_family:
+        font_path = Path(__file__).resolve().parent / "Marvin.ttf"
+
+    if not font_path.exists():
+        return
+
+    display_text = text.title()
+    current_size = float(font_size)
+
+    try:
+        font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
+    except OSError:
+        return
+
+    left, _, right, _ = font.getbbox(display_text)
+    text_width = right - left
+
+    while text_width > rect_width and current_size > 1:
+        current_size -= 0.2
+        try:
+            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
+        except OSError:
+            break
+        left, _, right, _ = font.getbbox(display_text)
+        text_width = right - left
+
+    if current_size != font_size:
+        _set_font_size(element, round(current_size, 2))
+
+
 def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
-    for text_element in group.getElementsByTagName("text"):
+    text_elements = list(group.getElementsByTagName("text"))
+    for index, text_element in enumerate(text_elements):
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
+        if len(text) > 12:
+            _fit_text_within_rect(group, text_element, text, index)
 
 
 def _update_address_group(group: Element, text: str) -> None:
