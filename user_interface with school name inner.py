@@ -18,6 +18,7 @@ import _pickle as pickle
 import _thread
 import time
 
+from pathlib import Path
 from PIL import Image
 import os
 
@@ -74,6 +75,14 @@ def set_status_message(message: str, color: str = "green") -> None:
    except RuntimeError:
       # The widget may have been destroyed during shutdown.
       pass
+
+
+def _load_tabular_file(path: str, **kwargs):
+   """Load a spreadsheet or CSV file based on its extension."""
+   suffix = Path(path).suffix.lower()
+   if suffix == ".csv":
+      return pd.read_csv(path, **kwargs)
+   return pd.read_excel(path, **kwargs)
 
 def storeDocs2(subject):
    
@@ -267,7 +276,7 @@ def populate_school_checkboxes(sheet_path: Optional[str] = None):
    schools = set()
    for path in paths_to_scan:
       try:
-         df = pd.read_excel(path, header=0)
+         df = _load_tabular_file(path, header=0)
       except Exception as exc:
          print(f"Failed to read '{path}': {exc}")
          continue
@@ -427,7 +436,7 @@ def make(dum):
 '#234567']
 
    if processing_books:
-      df = pd.read_excel(file, header=0)
+      df = _load_tabular_file(file, header=0)
       if "school_name" in df.columns:
          cleaned_names = {
             str(name).strip()
@@ -520,7 +529,7 @@ def make(dum):
    id_cards_created = 0
    if processing_id_cards:
       try:
-         id_df = pd.read_excel(id_card_file, header=0)
+         id_df = _load_tabular_file(id_card_file, header=0)
       except Exception as exc:
          if status_label is not None:
             status_label.configure(fg="red", text=f"Failed to load ID card sheet: {exc}")
