@@ -369,6 +369,14 @@ def make(dum):
 
 
    df = pd.read_excel(file, header=0)
+   sheet_has_multiple_schools = False
+   if "school_name" in df.columns:
+      cleaned_names = {
+         str(name).strip()
+         for name in df["school_name"].dropna()
+         if str(name).strip() != ""
+      }
+      sheet_has_multiple_schools = len(cleaned_names) > 1
    data = df.to_dict('index')
    subjectIDX = {}
    prev = ""
@@ -436,7 +444,7 @@ def make(dum):
          
          photo_name = item["user_id"]
          
-         dc.personalize(item["outer_code"], photo_name , item["school_id"],school_color_code1,school_color_code2,grade_colour_code,kid_color_code1,kid_color_code2,item["first_name"]+" "+item["last_name"],str(item["book_id"]).zfill(3),item)      
+         dc.personalize(item["outer_code"], photo_name , item["school_id"],school_color_code1,school_color_code2,grade_colour_code,kid_color_code1,kid_color_code2,item["first_name"]+" "+item["last_name"],str(item["book_id"]).zfill(3),item,sheet_has_multiple_schools)
    
    if checkVar4.get()==1:
       for key,item in data.items():

@@ -9,6 +9,19 @@ cmmn_doc=0
 import os,shutil,sys
 
 
+def _sanitize_for_path(value, fallback):
+    """Return a filesystem-friendly string for folder/file names."""
+    if value is None:
+        value = ""
+    value = str(value).strip()
+    if not value:
+        return fallback
+
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", value)
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_-")
+    return sanitized or fallback
+
+
 seperator_rect=None
 def set_font_family(text_element, font_family,font_weight):
     """Updates the font size in the style attribute of a <text> element."""
@@ -198,7 +211,7 @@ def callInkscape_png(infile, outfile, timeout = 10, counter = 1,old = 0):
         callInkscape_png(infile, outfile, 20, counter - 1, old)
 
 
-def personalize(outer_code,photoFolder ,id,school_color_code1,school_color_code2,grade_colour_code,kid_color_code1,kid_color_code2,name,bookid,tuple):
+def personalize(outer_code,photoFolder ,id,school_color_code1,school_color_code2,grade_colour_code,kid_color_code1,kid_color_code2,name,bookid,tuple,multiple_schools=False):
        
         cmmn_doc =p( r"\\pixartnas\home\INTERNAL_PROCESSING\SCHOOLCOVERS"+"\\"+str(outer_code)[0:3]+"\\"+str(outer_code)+".svg")
         
@@ -428,7 +441,36 @@ def personalize(outer_code,photoFolder ,id,school_color_code1,school_color_code2
             svg.setAttribute("height", str(math.floor(convert_to_mm(view_box_height))) + "mm")
             
             open("Temp"+"/"+ str(outer_code)[:3]+"/"+bookid+".svg", "w", encoding="utf-8").write(cmmn_doc.toprettyxml())
-            callInkscape("Temp"+"/"+ str(outer_code)[:3]+"/"+bookid+".svg","finalcovers"+"/"+bookid+".pdf",10,10,0)
+
+            output_dir = os.path.join("finalcovers")
+            output_name = f"{bookid}.pdf"
+
+            if multiple_schools:
+                school_name_raw = tuple.get("school_name", "")
+                subject_name_raw = (
+                    tuple.get("subject_name")
+                    or tuple.get("subject")
+                    or tuple.get("subjectname")
+                    or ""
+                )
+                first_name_raw = tuple.get("first_name", "")
+                last_name_raw = tuple.get("last_name", "")
+
+                school_name_clean = _sanitize_for_path(school_name_raw, "School")
+                subject_name_clean = _sanitize_for_path(subject_name_raw, "Subject")
+                first_name_clean = _sanitize_for_path(first_name_raw, "First")
+                last_name_clean = _sanitize_for_path(last_name_raw, "Last")
+
+                folder_name = f"{str(outer_code)[:3]}_{school_name_clean}"
+                output_dir = os.path.join(output_dir, folder_name)
+                os.makedirs(output_dir, exist_ok=True)
+                output_name = f"{school_name_clean}_{outer_code}_{subject_name_clean}_{first_name_clean}_{last_name_clean}.pdf"
+            else:
+                os.makedirs(output_dir, exist_ok=True)
+
+            output_path = os.path.join(output_dir, output_name)
+
+            callInkscape("Temp"+"/"+ str(outer_code)[:3]+"/"+bookid+".svg",output_path,10,10,0)
             
             if int(tuple['subidx']) == 1:
                 png_folder = os.path.join("Temp", str(outer_code)[:3], "PNG")
