@@ -19,6 +19,7 @@ import _thread
 import time
 
 from pathlib import Path
+from datetime import datetime
 from PIL import Image
 import os
 
@@ -77,6 +78,164 @@ def set_status_message(message: str, color: str = "green") -> None:
    except RuntimeError:
       # The widget may have been destroyed during shutdown.
       pass
+
+
+class SchoolDocuments(NamedTuple):
+   school_id: Optional[str]
+   label: str
+   pdfs: List[Path]
+
+
+def _sanitize_school_label(value: str) -> str:
+   value = (value or "").strip()
+   fallback = "School"
+   if not value:
+      value = fallback
+   if hasattr(dc, "_sanitize_for_path"):
+      sanitized = dc._sanitize_for_path(value, fallback)
+   else:
+      sanitized = "".join(ch if ch.isalnum() else "_" for ch in value)
+      sanitized = "_".join(part for part in sanitized.split("_") if part)
+      sanitized = sanitized or fallback
+   return sanitized
+
+
+def _merge_pdf_files(pdf_paths: Sequence[Path], output_path: Path) -> bool:
+   combined = fitz.open()
+   try:
+      for pdf_path in pdf_paths:
+         try:
+            with fitz.open(str(pdf_path)) as src:
+               combined.insert_pdf(src)
+         except Exception as exc:
+            print(f"Failed to include {pdf_path}: {exc}")
+      if combined.page_count:
+         output_path.parent.mkdir(parents=True, exist_ok=True)
+         combined.save(str(output_path))
+         return True
+      return False
+   finally:
+      combined.close()
+
+
+def _create_verification_pdf(pdf_paths: Sequence[Path], output_path: Path) -> bool:
+   verification_doc = fitz.open()
+   matrix = fitz.Matrix(100 / 72, 100 / 72)
+   try:
+      for pdf_path in pdf_paths:
+         try:
+            with fitz.open(str(pdf_path)) as src:
+               for page in src:
+                  pix = page.get_pixmap(matrix=matrix, alpha=False)
+                  width_pt = pix.width * 72 / 100
+                  height_pt = pix.height * 72 / 100
+                  new_page = verification_doc.new_page(width=width_pt, height=height_pt)
+                  new_page.insert_image(new_page.rect, stream=pix.tobytes("png"))
+         except Exception as exc:
+            print(f"Failed to render {pdf_path}: {exc}")
+      if verification_doc.page_count:
+         output_path.parent.mkdir(parents=True, exist_ok=True)
+         verification_doc.save(str(output_path))
+         return True
+      return False
+   finally:
+      verification_doc.close()
+
+
+def _collect_child_pdf_paths(school_dir: Path) -> List[Path]:
+   pdf_paths: List[Path] = []
+   child_dirs = [
+      entry
+      for entry in school_dir.iterdir()
+      if entry.is_dir() and entry.name.lower() not in {"working"}
+   ]
+   for child_dir in sorted(child_dirs, key=lambda path: path.name.lower()):
+      front_path: Optional[Path] = None
+      back_path: Optional[Path] = None
+      for pdf_path in sorted(child_dir.glob("*.pdf"), key=lambda path: path.name.lower()):
+         upper_name = pdf_path.name.upper()
+         if upper_name.endswith("_FRONT.PDF"):
+            front_path = pdf_path
+         elif upper_name.endswith("_BACK.PDF"):
+            back_path = pdf_path
+      if front_path is not None:
+         pdf_paths.append(front_path)
+      if back_path is not None:
+         pdf_paths.append(back_path)
+   return pdf_paths
+
+
+def _collect_cover_documents(cover_root: Path) -> List[SchoolDocuments]:
+   documents: List[SchoolDocuments] = []
+   if not cover_root.is_dir():
+      return documents
+   for entry in sorted(cover_root.iterdir(), key=lambda path: path.name.lower()):
+      if not entry.is_dir():
+         continue
+      pdfs = sorted(entry.glob("*.pdf"), key=lambda path: path.name.lower())
+      if not pdfs:
+         continue
+      school_id: Optional[str] = None
+      label_source = entry.name
+      parts = entry.name.split("_", 1)
+      if len(parts) == 2:
+         potential_id, remainder = parts
+         school_id = potential_id or None
+         label_source = remainder
+      documents.append(
+         SchoolDocuments(school_id, _sanitize_school_label(label_source), pdfs)
+      )
+   return documents
+
+
+def _collect_report_card_documents(report_root: Path) -> List[SchoolDocuments]:
+   documents: List[SchoolDocuments] = []
+   if not report_root.is_dir():
+      return documents
+   for school_dir in sorted(report_root.iterdir(), key=lambda path: path.name.lower()):
+      if not school_dir.is_dir():
+         continue
+      pdfs = _collect_child_pdf_paths(school_dir)
+      if not pdfs:
+         continue
+      school_id: Optional[str] = None
+      label_source = school_dir.name
+      parts = school_dir.name.split("_", 1)
+      if len(parts) == 2:
+         potential_id, remainder = parts
+         school_id = potential_id or None
+         label_source = remainder
+      documents.append(
+         SchoolDocuments(school_id, _sanitize_school_label(label_source), pdfs)
+      )
+   return documents
+
+
+def _collect_id_card_documents(
+   id_root: Path, name_overrides: Dict[str, str]
+) -> List[SchoolDocuments]:
+   documents: List[SchoolDocuments] = []
+   if not id_root.is_dir():
+      return documents
+   for school_dir in sorted(id_root.iterdir(), key=lambda path: path.name.lower()):
+      if not school_dir.is_dir():
+         continue
+      pdfs = _collect_child_pdf_paths(school_dir)
+      if not pdfs:
+         continue
+      school_id = school_dir.name
+      label = name_overrides.get(school_id) or _sanitize_school_label(school_dir.name)
+      documents.append(SchoolDocuments(school_id, label, pdfs))
+   return documents
+
+
+def _build_print_label(documents: Sequence[SchoolDocuments]) -> str:
+   labels = sorted({doc.label for doc in documents})
+   if not labels:
+      return "School"
+   if len(labels) == 1:
+      return labels[0]
+   return "_".join(labels)
 
 
 def _load_tabular_file(path: str, **kwargs):
@@ -615,84 +774,99 @@ def make(dum):
 
 
 def _merge_cover_pages_worker() -> None:
-   cover_root = "finalcovers"
-   if not os.path.isdir(cover_root):
-      set_status_message("No cover pages available to merge.", "red")
-      return
+   set_status_message("Merging documents...", "blue")
 
-   set_status_message("Merging cover pages...", "blue")
+   date_prefix = datetime.now().strftime("%Y%m%d")
+   print_root = Path("Binders for Print")
+   verification_root = Path("Binders for Verification")
+   print_root.mkdir(parents=True, exist_ok=True)
+   verification_root.mkdir(parents=True, exist_ok=True)
 
-   os.makedirs("Binders for Print", exist_ok=True)
-   os.makedirs("Binders for Verification", exist_ok=True)
+   cover_documents = _collect_cover_documents(Path("finalcovers"))
+   report_documents = _collect_report_card_documents(Path("Report cards"))
 
-   created_count = 0
+   name_overrides: Dict[str, str] = {}
+   for doc in cover_documents + report_documents:
+      if doc.school_id:
+         name_overrides[doc.school_id] = doc.label
 
-   for entry in sorted(os.listdir(cover_root)):
-      source_dir = os.path.join(cover_root, entry)
-      if not os.path.isdir(source_dir):
-         continue
+   id_documents = _collect_id_card_documents(Path("ID Cards"), name_overrides)
 
-      pdf_files = [
-         file
-         for file in sorted(os.listdir(source_dir))
-         if file.lower().endswith(".pdf")
-      ]
+   messages: List[str] = []
+   any_success = False
 
-      if not pdf_files:
-         continue
-
-      if "_" in entry:
-         school_name = entry.split("_", 1)[1] or entry
+   if cover_documents:
+      cover_print_label = _build_print_label(cover_documents)
+      cover_print_name = (
+         f"{date_prefix}_{cover_print_label}_COVER_Own_Sheet_SS_1 copy.pdf"
+      )
+      cover_print_path = print_root / cover_print_name
+      cover_print_created = _merge_pdf_files(
+         [pdf for doc in cover_documents for pdf in doc.pdfs], cover_print_path
+      )
+      cover_verification_created = 0
+      for doc in cover_documents:
+         verification_name = (
+            f"{date_prefix}_{doc.label}_COVER_verify.pdf"
+         )
+         if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
+            cover_verification_created += 1
+      if cover_print_created or cover_verification_created:
+         any_success = True
+         messages.append(
+            f"Merged cover pages for {len(cover_documents)} school(s)."
+         )
       else:
-         school_name = entry
-
-      if hasattr(dc, "_sanitize_for_path"):
-         safe_name = dc._sanitize_for_path(school_name, "School")
-      else:
-         safe_name = school_name
-
-      if not safe_name:
-         safe_name = "School"
-
-      print_dir = os.path.join("Binders for Print", safe_name)
-      verification_dir = os.path.join("Binders for Verification", safe_name)
-      os.makedirs(print_dir, exist_ok=True)
-      os.makedirs(verification_dir, exist_ok=True)
-
-      binder_filename = f"{safe_name}_binder.pdf"
-      binder_print_path = os.path.join(print_dir, binder_filename)
-
-      combined = fitz.open()
-      try:
-         for pdf_file in pdf_files:
-            pdf_path = os.path.join(source_dir, pdf_file)
-            with fitz.open(pdf_path) as src:
-               combined.insert_pdf(src)
-         combined.save(binder_print_path)
-      finally:
-         combined.close()
-
-      verification_path = os.path.join(verification_dir, binder_filename)
-      with fitz.open(binder_print_path) as merged_doc:
-         verification_doc = fitz.open()
-         try:
-            matrix = fitz.Matrix(100 / 72, 100 / 72)
-            for page in merged_doc:
-               pix = page.get_pixmap(matrix=matrix, alpha=False)
-               width_pt = pix.width * 72 / 100
-               height_pt = pix.height * 72 / 100
-               new_page = verification_doc.new_page(width=width_pt, height=height_pt)
-               new_page.insert_image(new_page.rect, stream=pix.tobytes("png"))
-            verification_doc.save(verification_path)
-         finally:
-            verification_doc.close()
-
-      created_count += 1
-
-   if created_count:
-      set_status_message(f"Merged cover pages for {created_count} school(s).", "green")
+         messages.append("No cover pages found to merge.")
    else:
-      set_status_message("No cover pages found to merge.", "red")
+      messages.append("No cover pages found to merge.")
+
+   if report_documents:
+      report_print_label = _build_print_label(report_documents)
+      report_print_name = (
+         f"{date_prefix}_{report_print_label}_report_card_Own_Sheet_BB_1 copy.pdf"
+      )
+      report_print_path = print_root / report_print_name
+      report_print_created = _merge_pdf_files(
+         [pdf for doc in report_documents for pdf in doc.pdfs], report_print_path
+      )
+      report_verification_created = 0
+      for doc in report_documents:
+         verification_name = (
+            f"{date_prefix}_{doc.label}_report_card_verify.pdf"
+         )
+         if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
+            report_verification_created += 1
+      if report_print_created or report_verification_created:
+         any_success = True
+         messages.append(
+            f"Merged report cards for {len(report_documents)} school(s)."
+         )
+      else:
+         messages.append("No report cards found to merge.")
+   else:
+      messages.append("No report cards found to merge.")
+
+   if id_documents:
+      id_verification_created = 0
+      for doc in id_documents:
+         verification_name = (
+            f"{date_prefix}_{doc.label}_ID_Card_verify.pdf"
+         )
+         if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
+            id_verification_created += 1
+      if id_verification_created:
+         any_success = True
+         messages.append(
+            f"Merged ID cards for {len(id_documents)} school(s)."
+         )
+      else:
+         messages.append("No ID cards found to merge.")
+   else:
+      messages.append("No ID cards found to merge.")
+
+   status_color = "green" if any_success else "red"
+   set_status_message(" ".join(messages), status_color)
 
 
 def merge_cover_pages() -> None:
