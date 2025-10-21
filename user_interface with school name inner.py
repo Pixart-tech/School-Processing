@@ -64,6 +64,9 @@ status_label = None
 size_info_label = None
 scale_info_label = None
 
+last_processed_school_labels: Set[str] = set()
+last_processed_school_ids: Set[str] = set()
+
 
 def set_status_message(message: str, color: str = "green") -> None:
    """Safely update the status label from any thread."""
@@ -236,6 +239,60 @@ def _build_print_label(documents: Sequence[SchoolDocuments]) -> str:
    if len(labels) == 1:
       return labels[0]
    return "_".join(labels)
+
+
+def _record_processed_school(item: Mapping[str, Any]) -> None:
+   global last_processed_school_labels, last_processed_school_ids
+
+   school_value = item.get("school_name") if isinstance(item, Mapping) else None
+   if school_value is not None and not pd.isna(school_value):
+      label = _sanitize_school_label(str(school_value))
+      if label:
+         last_processed_school_labels.add(label)
+
+   school_id_value = item.get("school_id") if isinstance(item, Mapping) else None
+   if school_id_value is not None and not pd.isna(school_id_value):
+      school_id_str = str(school_id_value).strip()
+      if school_id_str:
+         last_processed_school_ids.add(school_id_str)
+
+
+def _get_allowed_school_filters() -> Tuple[Set[str], Set[str]]:
+   allowed_labels = set(last_processed_school_labels)
+   allowed_ids = set(last_processed_school_ids)
+
+   selected_names = {
+      name for var, name in school_vars if var.get() == 1
+   }
+   for name in selected_names:
+      sanitized = _sanitize_school_label(name)
+      if sanitized:
+         allowed_labels.add(sanitized)
+
+   return allowed_labels, allowed_ids
+
+
+def _filter_documents_for_merge(
+   documents: Sequence[SchoolDocuments],
+   allowed_labels: Set[str],
+   allowed_ids: Set[str],
+) -> List[SchoolDocuments]:
+   if not documents:
+      return []
+
+   if not allowed_labels and not allowed_ids:
+      return list(documents)
+
+   filtered: List[SchoolDocuments] = []
+   for doc in documents:
+      school_id = (doc.school_id or "").strip()
+      if school_id and school_id in allowed_ids:
+         filtered.append(doc)
+         continue
+      if doc.label in allowed_labels:
+         filtered.append(doc)
+
+   return filtered
 
 
 def _load_tabular_file(path: str, **kwargs):
@@ -510,7 +567,11 @@ def convert_cmyk_to_rgb(input_path, output_path):
 
 def make(dum):
    spine=0
-   global file,folder, school_vars, kid_index_entry, status_label, selected_size, id_card_file, report_card_file
+   global file, folder, school_vars, kid_index_entry, status_label, selected_size
+   global id_card_file, report_card_file, last_processed_school_labels, last_processed_school_ids
+
+   last_processed_school_labels = set()
+   last_processed_school_ids = set()
 
    processing_books = checkVar3.get()==1 or checkVar4.get()==1
    processing_id_cards = checkVar5.get()==1
@@ -636,7 +697,9 @@ def make(dum):
             print(item["book_id"])
          if not matches_selection(item):
             continue
-         
+
+         _record_processed_school(item)
+
          if str(item["outer_code"]).endswith("s") or str(item["outer_code"]).strip()=="":
             continue
          
@@ -690,6 +753,8 @@ def make(dum):
       for key,item in data.items():
          if not matches_selection(item):
             continue
+
+         _record_processed_school(item)
          if str(item["inner_code"]).endswith("b") or str(item["inner_code"]).strip()=="":
             continue
          full_path = os.path.join(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL BOOKS FORM\NONP", str(item["inner_code"]).zfill(7) )
@@ -716,6 +781,8 @@ def make(dum):
          if not matches_selection(record):
             continue
 
+         _record_processed_school(record)
+
          try:
             if id_card_maker.personalize_id_card(record):
                id_cards_created += 1
@@ -736,6 +803,8 @@ def make(dum):
       for record in report_df.to_dict("records"):
          if not matches_selection(record):
             continue
+
+         _record_processed_school(record)
 
          try:
             if report_card_maker.personalize_report_card(record):
@@ -776,94 +845,129 @@ def make(dum):
 def _merge_cover_pages_worker() -> None:
    set_status_message("Merging documents...", "blue")
 
-   date_prefix = datetime.now().strftime("%Y%m%d")
+   date_prefix = datetime.now().strftime("%d-%m-%Y")
    print_root = Path("Binders for Print")
    verification_root = Path("Binders for Verification")
    print_root.mkdir(parents=True, exist_ok=True)
    verification_root.mkdir(parents=True, exist_ok=True)
 
-   cover_documents = _collect_cover_documents(Path("finalcovers"))
-   report_documents = _collect_report_card_documents(Path("Report cards"))
+   allowed_labels, allowed_ids = _get_allowed_school_filters()
+
+   processing_cover = checkVar3.get() == 1
+   processing_report_cards = checkVar6.get() == 1
+   processing_id_cards = checkVar5.get() == 1
+
+   cover_documents: List[SchoolDocuments] = []
+   report_documents: List[SchoolDocuments] = []
+
+   if processing_cover:
+      cover_documents = _filter_documents_for_merge(
+         _collect_cover_documents(Path("finalcovers")),
+         allowed_labels,
+         allowed_ids,
+      )
+
+   if processing_report_cards:
+      report_documents = _filter_documents_for_merge(
+         _collect_report_card_documents(Path("Report cards")),
+         allowed_labels,
+         allowed_ids,
+      )
 
    name_overrides: Dict[str, str] = {}
    for doc in cover_documents + report_documents:
       if doc.school_id:
          name_overrides[doc.school_id] = doc.label
 
-   id_documents = _collect_id_card_documents(Path("ID Cards"), name_overrides)
+   id_documents: List[SchoolDocuments] = []
+   if processing_id_cards:
+      id_documents = _filter_documents_for_merge(
+         _collect_id_card_documents(Path("ID Cards"), name_overrides),
+         allowed_labels,
+         allowed_ids,
+      )
 
    messages: List[str] = []
    any_success = False
 
-   if cover_documents:
-      cover_print_label = _build_print_label(cover_documents)
-      cover_print_name = (
-         f"{date_prefix}_{cover_print_label}_COVER_Own_Sheet_SS_1 copy.pdf"
-      )
-      cover_print_path = print_root / cover_print_name
-      cover_print_created = _merge_pdf_files(
-         [pdf for doc in cover_documents for pdf in doc.pdfs], cover_print_path
-      )
-      cover_verification_created = 0
-      for doc in cover_documents:
-         verification_name = (
-            f"{date_prefix}_{doc.label}_COVER_verify.pdf"
+   if processing_cover:
+      if cover_documents:
+         cover_print_label = _build_print_label(cover_documents)
+         cover_print_name = (
+            f"{date_prefix}_{cover_print_label}_COVER_Own_Sheet_SS_1 copy.pdf"
          )
-         if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
-            cover_verification_created += 1
-      if cover_print_created or cover_verification_created:
-         any_success = True
-         messages.append(
-            f"Merged cover pages for {len(cover_documents)} school(s)."
+         cover_print_path = print_root / cover_print_name
+         cover_print_created = _merge_pdf_files(
+            [pdf for doc in cover_documents for pdf in doc.pdfs], cover_print_path
          )
+         cover_verification_created = 0
+         for doc in cover_documents:
+            verification_name = (
+               f"{date_prefix}_{doc.label}_COVER_verify.pdf"
+            )
+            if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
+               cover_verification_created += 1
+         if cover_print_created or cover_verification_created:
+            any_success = True
+            messages.append(
+               f"Merged cover pages for {len(cover_documents)} school(s)."
+            )
+         else:
+            messages.append("No cover pages found to merge.")
       else:
          messages.append("No cover pages found to merge.")
    else:
-      messages.append("No cover pages found to merge.")
+      messages.append("Cover page merging skipped.")
 
-   if report_documents:
-      report_print_label = _build_print_label(report_documents)
-      report_print_name = (
-         f"{date_prefix}_{report_print_label}_report_card_Own_Sheet_BB_1 copy.pdf"
-      )
-      report_print_path = print_root / report_print_name
-      report_print_created = _merge_pdf_files(
-         [pdf for doc in report_documents for pdf in doc.pdfs], report_print_path
-      )
-      report_verification_created = 0
-      for doc in report_documents:
-         verification_name = (
-            f"{date_prefix}_{doc.label}_report_card_verify.pdf"
+   if processing_report_cards:
+      if report_documents:
+         report_print_label = _build_print_label(report_documents)
+         report_print_name = (
+            f"{date_prefix}_{report_print_label}_report_card_Own_Sheet_BB_1 copy.pdf"
          )
-         if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
-            report_verification_created += 1
-      if report_print_created or report_verification_created:
-         any_success = True
-         messages.append(
-            f"Merged report cards for {len(report_documents)} school(s)."
+         report_print_path = print_root / report_print_name
+         report_print_created = _merge_pdf_files(
+            [pdf for doc in report_documents for pdf in doc.pdfs], report_print_path
          )
+         report_verification_created = 0
+         for doc in report_documents:
+            verification_name = (
+               f"{date_prefix}_{doc.label}_report_card_verify.pdf"
+            )
+            if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
+               report_verification_created += 1
+         if report_print_created or report_verification_created:
+            any_success = True
+            messages.append(
+               f"Merged report cards for {len(report_documents)} school(s)."
+            )
+         else:
+            messages.append("No report cards found to merge.")
       else:
          messages.append("No report cards found to merge.")
    else:
-      messages.append("No report cards found to merge.")
+      messages.append("Report card merging skipped.")
 
-   if id_documents:
-      id_verification_created = 0
-      for doc in id_documents:
-         verification_name = (
-            f"{date_prefix}_{doc.label}_ID_Card_verify.pdf"
-         )
-         if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
-            id_verification_created += 1
-      if id_verification_created:
-         any_success = True
-         messages.append(
-            f"Merged ID cards for {len(id_documents)} school(s)."
-         )
+   if processing_id_cards:
+      if id_documents:
+         id_verification_created = 0
+         for doc in id_documents:
+            verification_name = (
+               f"{date_prefix}_{doc.label}_ID_Card_verify.pdf"
+            )
+            if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
+               id_verification_created += 1
+         if id_verification_created:
+            any_success = True
+            messages.append(
+               f"Merged ID cards for {len(id_documents)} school(s)."
+            )
+         else:
+            messages.append("No ID cards found to merge.")
       else:
          messages.append("No ID cards found to merge.")
    else:
-      messages.append("No ID cards found to merge.")
+      messages.append("ID card merging skipped.")
 
    status_color = "green" if any_success else "red"
    set_status_message(" ".join(messages), status_color)
