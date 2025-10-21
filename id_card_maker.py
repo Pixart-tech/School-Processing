@@ -3,10 +3,8 @@ from __future__ import annotations
 import argparse
 import csv
 import math
-import os
 import re
 import shutil
-import stat
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple, Set
 from PIL import ImageFont
@@ -425,27 +423,9 @@ def _copy_photo(source: Path, destination_dir: Path) -> Optional[str]:
     return relative_path.as_posix()
 
 
-def _handle_remove_readonly(function, path: str, exc_info) -> None:
-    _, exc, _ = exc_info
-    if isinstance(exc, PermissionError):
-        try:
-            current_mode = os.stat(path).st_mode
-            os.chmod(path, current_mode | stat.S_IWRITE)
-        except FileNotFoundError:
-            return
-        except PermissionError:
-            pass
-        try:
-            function(path)
-        except PermissionError:
-            raise exc
-        return
-    raise exc
-
-
 def _prepare_working_directory(template_dir: Path, working_dir: Path) -> None:
     if working_dir.exists():
-        shutil.rmtree(working_dir, onerror=_handle_remove_readonly)
+        shutil.rmtree(working_dir)
     working_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(template_dir, working_dir)
 
