@@ -7,10 +7,12 @@ import pandas as pd
 
 def callInkscape(infile, outfile, timeout = 10, counter = 1,old = 0):
     try:
+        # Do not override the DPI when exporting PDFs so the output canvas
+        # matches the source SVG document size.
         if old == 0:
-            p=subprocess.run(['inkscape',infile,'--export-type=pdf','--export-filename=' + outfile, "--export-dpi=300", "--export-area-page"], timeout = timeout)
-        else:    
-            p=subprocess.run(['inkscape',infile,'--export-type=pdf','--export-filename=' + outfile, "--export-dpi=300", "--export-area-drawing"], timeout = timeout)
+            p=subprocess.run(['inkscape', infile, '--export-type=pdf', '--export-filename=' + outfile, "--export-area-page"], timeout = timeout)
+        else:
+            p=subprocess.run(['inkscape', infile, '--export-type=pdf', '--export-filename=' + outfile, "--export-area-drawing"], timeout = timeout)
     except Exception as e:
         print(e)
         
