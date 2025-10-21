@@ -25,6 +25,7 @@ import os
 
 import doc_maker,dc
 import id_card_maker
+import report_card_maker
 import util
 
 global Input
@@ -42,6 +43,7 @@ if not os.path.isdir("finalcovers"):
 folder = ""
 file = ""
 id_card_file = ""
+report_card_file = ""
 
 
 if os.path.isdir("STICKERS")==False:
@@ -252,7 +254,7 @@ def storePS (tuple, prev, subDict):
 
 
 def populate_school_checkboxes(sheet_path: Optional[str] = None):
-   global school_vars, schools_inner_frame, school_canvas, status_label, file, id_card_file
+   global school_vars, schools_inner_frame, school_canvas, status_label, file, id_card_file, report_card_file
 
    if schools_inner_frame is None:
       return
@@ -269,6 +271,8 @@ def populate_school_checkboxes(sheet_path: Optional[str] = None):
       paths_to_scan.append(file)
    if id_card_file and id_card_file not in paths_to_scan:
       paths_to_scan.append(id_card_file)
+   if report_card_file and report_card_file not in paths_to_scan:
+      paths_to_scan.append(report_card_file)
 
    if not paths_to_scan:
       return
@@ -326,6 +330,14 @@ def open_id_card_diag():
       populate_school_checkboxes(id_card_file)
 
 
+def open_report_card_diag():
+   global report_card_file
+   report_card_file = filedialog.askopenfilename(initialdir="E:/winapp")
+
+   if report_card_file:
+      populate_school_checkboxes(report_card_file)
+
+
 
 def windowDialog():
    _thread.start_new_thread(make, (0,))
@@ -339,12 +351,13 @@ def convert_cmyk_to_rgb(input_path, output_path):
 
 def make(dum):
    spine=0
-   global file,folder, school_vars, kid_index_entry, status_label, selected_size, id_card_file
+   global file,folder, school_vars, kid_index_entry, status_label, selected_size, id_card_file, report_card_file
 
    processing_books = checkVar3.get()==1 or checkVar4.get()==1
    processing_id_cards = checkVar5.get()==1
+   processing_report_cards = checkVar6.get()==1
 
-   if not processing_books and not processing_id_cards:
+   if not processing_books and not processing_id_cards and not processing_report_cards:
       if status_label is not None:
          status_label.configure(fg="red", text="Select at least one processing option.")
       return
@@ -357,6 +370,11 @@ def make(dum):
    if processing_id_cards and id_card_file == "":
       if status_label is not None:
          status_label.configure(fg="red", text = "Select the ID card Excel file before processing.")
+      return
+
+   if processing_report_cards and report_card_file == "":
+      if status_label is not None:
+         status_label.configure(fg="red", text = "Select the report card Excel file before processing.")
       return
 
    current_size = ""
@@ -547,6 +565,27 @@ def make(dum):
          except Exception as exc:
             print(f"Failed to generate ID card for {record.get('user_id')}: {exc}")
 
+   report_cards_created = 0
+   if processing_report_cards:
+      try:
+         report_df = _load_tabular_file(report_card_file, header=0)
+      except Exception as exc:
+         if status_label is not None:
+            status_label.configure(fg="red", text=f"Failed to load report card sheet: {exc}")
+         return
+
+      for record in report_df.to_dict("records"):
+         if not matches_selection(record):
+            continue
+
+         try:
+            if report_card_maker.personalize_report_card(record):
+               report_cards_created += 1
+         except report_card_maker.TemplateNotFoundError as exc:
+            print(exc)
+         except Exception as exc:
+            print(f"Failed to generate report card for {record.get('user_id')}: {exc}")
+
    status_messages = []
    status_color = "green"
 
@@ -562,6 +601,13 @@ def make(dum):
          status_messages.append(f"Generated {id_cards_created} ID card(s).")
       else:
          status_messages.append("No ID cards generated.")
+         status_color = "red"
+
+   if processing_report_cards:
+      if report_cards_created:
+         status_messages.append(f"Generated {report_cards_created} report card(s).")
+      else:
+         status_messages.append("No report cards generated.")
          status_color = "red"
 
    if status_messages:
@@ -656,11 +702,11 @@ def merge_cover_pages() -> None:
 # root window title and dimension
 root.title("Processing UI")
 # Set geometry(widthxheight)
-root.geometry('520x650')
+root.geometry('520x680')
 
 root.grid_columnconfigure(0, weight=1)
 root.grid_columnconfigure(1, weight=1)
-root.grid_rowconfigure(5, weight=1)
+root.grid_rowconfigure(6, weight=1)
 
 
 #_thread.start_new_thread(printOut, (0,))
@@ -671,19 +717,22 @@ button.grid(column=0, row=0, columnspan=2, pady=(10,5))
 id_button=tk.Button(root, text="Open ID Card Sheet", command=open_id_card_diag)
 id_button.grid(column=0, row=1, columnspan=2, pady=(0,5))
 
+report_button=tk.Button(root, text="Open Report Card Sheet", command=open_report_card_diag)
+report_button.grid(column=0, row=2, columnspan=2, pady=(0,5))
+
 kid_label = tk.Label(root, text = "Kid Index (optional):")
-kid_label.grid(column=0, row=2, sticky="w", padx=5)
+kid_label.grid(column=0, row=3, sticky="w", padx=5)
 kid_index_entry = tk.Entry(root, width=20)
-kid_index_entry.grid(column=1, row=2, sticky="ew", padx=5)
+kid_index_entry.grid(column=1, row=3, sticky="ew", padx=5)
 
 status_label = tk.Label(root, fg = "red", text = "")
-status_label.grid(column=0, row=3, columnspan=2, sticky="w", padx=5, pady=(5,0))
+status_label.grid(column=0, row=4, columnspan=2, sticky="w", padx=5, pady=(5,0))
 
 school_label = tk.Label(root, text="Select schools to process:")
-school_label.grid(column=0, row=4, columnspan=2, sticky="w", padx=5, pady=(10,0))
+school_label.grid(column=0, row=5, columnspan=2, sticky="w", padx=5, pady=(10,0))
 
 school_frame = tk.Frame(root, bd=1, relief="sunken")
-school_frame.grid(column=0, row=5, columnspan=2, sticky="nsew", padx=5, pady=(0,10))
+school_frame.grid(column=0, row=6, columnspan=2, sticky="nsew", padx=5, pady=(0,10))
 
 school_canvas = tk.Canvas(school_frame, highlightthickness=0)
 school_canvas.pack(side="left", fill="both", expand=True)
@@ -703,13 +752,13 @@ options = ["440X290", "380X255", "420X290", "420X297", "297X210"]
 selected_size = tk.StringVar()
 
 size_label = tk.Label(root, text="Select a size from dropdown")
-size_label.grid(column=0, row=6, sticky="w", padx=5)
+size_label.grid(column=0, row=7, sticky="w", padx=5)
 
 size_dropdown = tk.OptionMenu(root, selected_size, *options)
-size_dropdown.grid(column=1, row=6, sticky="ew", padx=5)
+size_dropdown.grid(column=1, row=7, sticky="ew", padx=5)
 
 size_info_label = tk.Label(root, fg = "blue", text = "")
-size_info_label.grid(column=0, row=7, columnspan=2, sticky="w", padx=5)
+size_info_label.grid(column=0, row=8, columnspan=2, sticky="w", padx=5)
 
 
 def display_size(*args):
@@ -735,57 +784,62 @@ def display_scale(*args):
 
 
 scale_label=tk.Label(root,text="Select a scale from dropdown in %")
-scale_label.grid(column=0, row=8, sticky="w", padx=5)
+scale_label.grid(column=0, row=9, sticky="w", padx=5)
 scale_options=[50,60,70,80,90,100]
 selected_scale=tk.StringVar()
 selected_scale.trace_add("write", display_scale)
 selected_scale.set(100)
 
 scale_dropdown = tk.OptionMenu(root, selected_scale, *scale_options)
-scale_dropdown.grid(column=1, row=8, sticky="ew", padx=5)
+scale_dropdown.grid(column=1, row=9, sticky="ew", padx=5)
 
 scale_info_label=tk.Label(root,fg="red",text="")
-scale_info_label.grid(column=0,row=9,columnspan=2,sticky="w",padx=5)
+scale_info_label.grid(column=0,row=10,columnspan=2,sticky="w",padx=5)
 
 display_scale()
 
 
 button3=Button(root, text="DONE", command=windowDialog)
-button3.grid(column=0, row=10, columnspan=2, pady=(10,5))
+button3.grid(column=0, row=11, columnspan=2, pady=(10,5))
 
 
 CheckVar1 = IntVar()
 C1 = tk.Checkbutton(root, text = "SKIP FORM", variable = CheckVar1, \
                  onvalue = 1, offvalue = 0, height=2, \
                  width = 20)
-C1.grid(column =0, row =11, columnspan=2, sticky="w", padx=5)
+C1.grid(column =0, row =12, columnspan=2, sticky="w", padx=5)
 
 
 CheckVar2 = IntVar()
 C2 = tk.Checkbutton(root, text = "OLD FORM", variable = CheckVar2, \
                  onvalue = 1, offvalue = 0, height=2, \
                  width = 20)
-C2.grid(column =0, row =12, columnspan=2, sticky="w", padx=5)
+C2.grid(column =0, row =13, columnspan=2, sticky="w", padx=5)
 
 
 checkVar3=tk.IntVar(value=0)
 
 cv_page_button=tk.Checkbutton(root,var=checkVar3,text="Cover Page",height=2)
-cv_page_button.grid(row=13, column=0, columnspan=2, sticky="w", padx=5)
+cv_page_button.grid(row=14, column=0, columnspan=2, sticky="w", padx=5)
 checkVar4=tk.IntVar(value=0)
 
 
 
 Ip_button=tk.Checkbutton(root,var=checkVar4,text="Inner Pages",height=2)
-Ip_button.grid(row=14, column=0, columnspan=2, sticky="w", padx=5)
+Ip_button.grid(row=15, column=0, columnspan=2, sticky="w", padx=5)
 
 checkVar5=tk.IntVar(value=0)
 
 id_cards_button=tk.Checkbutton(root, var=checkVar5, text="ID Cards", height=2)
-id_cards_button.grid(row=15, column=0, columnspan=2, sticky="w", padx=5)
+id_cards_button.grid(row=16, column=0, columnspan=2, sticky="w", padx=5)
+
+checkVar6=tk.IntVar(value=0)
+
+report_cards_button=tk.Checkbutton(root, var=checkVar6, text="Report Cards", height=2)
+report_cards_button.grid(row=17, column=0, columnspan=2, sticky="w", padx=5)
 
 merge_button = tk.Button(root, text="Merge PDF", command=merge_cover_pages)
-merge_button.grid(column=0, row=16, columnspan=2, pady=(10,5))
+merge_button.grid(column=0, row=18, columnspan=2, pady=(10,5))
 
 if __name__=="__main__":
 
