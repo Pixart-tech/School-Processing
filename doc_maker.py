@@ -8,16 +8,27 @@ import pandas as pd
 def callInkscape(infile, outfile, timeout = 10, counter = 1,old = 0):
     try:
         # Do not override the DPI when exporting PDFs so the output canvas
-        # matches the source SVG document size.
-        if old == 0:
-            p=subprocess.run(['inkscape', infile, '--export-type=pdf', '--export-filename=' + outfile, "--export-area-page"], timeout = timeout)
-        else:
-            p=subprocess.run(['inkscape', infile, '--export-type=pdf', '--export-filename=' + outfile, "--export-area-drawing"], timeout = timeout)
+        # matches the source SVG document size. Using ``--export-area-page``
+        # ensures the exported PDF keeps the original SVG canvas dimensions,
+        # which is important for report card front/back alignment.
+        command = [
+            'inkscape',
+            infile,
+            '--export-type=pdf',
+            '--export-filename=' + outfile,
+            '--export-area-page',
+        ]
+        # ``old`` is retained for backwards compatibility. We always
+        # preserve the full page bounds so the canvas size in the exported
+        # PDF matches the SVG template.
+        p=subprocess.run(command, timeout = timeout)
+        if p.returncode != 0:
+            raise subprocess.CalledProcessError(p.returncode, command)
     except Exception as e:
         print(e)
-        
+
         counter-=1
-        
+
         if counter == 0:
             raise ValueError('TIMEOUT EXIRATION')
         
