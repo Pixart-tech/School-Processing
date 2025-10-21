@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Sequence, Set, Tuple
 
 from doc_maker import callInkscape
 from id_card_maker import (
@@ -80,6 +80,99 @@ def _resolve_template(template_dir: Path, prefix: str, class_name: str) -> Optio
     return None
 
 
+def _normalise_directory_name(value: str) -> str:
+    return re.sub(r"[^0-9a-z]+", "_", value.lower()).strip("_")
+
+
+def _resolve_template_directory(
+    template_root: Path, school_id: str, school_name: str
+) -> Optional[Path]:
+    """Locate the template directory for a school.
+
+    Some schools store their templates in folders that include either the
+    school name, the school ID, or both.  When the direct ``school_id``
+    lookup fails we attempt to locate a directory whose normalised name
+    contains the required pieces of information.
+    """
+
+    normalised_school_id = _normalise_string(school_id)
+    normalised_school_name = _normalise_string(school_name)
+
+    if normalised_school_id:
+        direct = template_root / normalised_school_id
+        if direct.is_dir():
+            return direct
+
+    sanitized_school_name = (
+        _sanitize_filename_component(normalised_school_name, "school")
+        if normalised_school_name
+        else ""
+    )
+    normalised_school_key = (
+        _normalise_directory_name(sanitized_school_name)
+        if sanitized_school_name
+        else ""
+    )
+    school_name_tokens: Set[str] = set()
+    if normalised_school_key:
+        school_name_tokens = {
+            token for token in normalised_school_key.split("_") if token
+        }
+
+    school_id_variants: Set[str] = set()
+    if normalised_school_id:
+        lower_id = normalised_school_id.lower()
+        school_id_variants.add(lower_id)
+        stripped = lower_id.lstrip("0")
+        if stripped:
+            school_id_variants.add(stripped)
+        if lower_id.isdigit():
+            school_id_variants.add(lower_id.zfill(3))
+
+    best_match: Optional[Path] = None
+    best_score = 0
+
+    try:
+        candidates = list(template_root.iterdir())
+    except FileNotFoundError:
+        candidates = []
+
+    for entry in candidates:
+        if not entry.is_dir():
+            continue
+
+        entry_key = _normalise_directory_name(entry.name)
+        if not entry_key:
+            continue
+
+        entry_tokens = {token for token in entry_key.split("_") if token}
+
+        score = 0
+
+        if school_id_variants and (school_id_variants & entry_tokens):
+            score += 2
+
+        if normalised_school_key:
+            if normalised_school_key in entry_key:
+                score += 1
+            elif school_name_tokens and (school_name_tokens & entry_tokens):
+                score += 1
+
+        if score > best_score:
+            best_match = entry
+            best_score = score
+
+    if best_match is not None:
+        return best_match
+
+    if sanitized_school_name:
+        fallback = template_root / sanitized_school_name
+        if fallback.is_dir():
+            return fallback
+
+    return None
+
+
 def personalize_report_card(
     record: Dict[str, object],
     *,
@@ -99,9 +192,11 @@ def personalize_report_card(
     if not user_id:
         return False
 
-    template_dir = template_root / school_id
-    if not template_dir.exists():
-        raise TemplateNotFoundError(f"Template directory not found for school: {school_id}")
+    template_dir = _resolve_template_directory(template_root, school_id, school_name_raw)
+    if template_dir is None:
+        raise TemplateNotFoundError(
+            f"Template directory not found for school: {school_id}"
+        )
 
     class_name = _normalise_string(record.get("class_name"))
     front_template = _resolve_template(template_dir, "FRONT", class_name)
@@ -247,7 +342,16 @@ def generate_report_cards(
     photo_root: Path = DEFAULT_PHOTO_ROOT,
 ) -> int:
     count = 0
+    seen_children: Set[Tuple[str, str]] = set()
     for record in records:
+        dedupe_key = (
+            _normalise_string(record.get("school_id")),
+            _normalise_string(record.get("user_id")),
+        )
+        if dedupe_key[1]:
+            if dedupe_key in seen_children:
+                continue
+            seen_children.add(dedupe_key)
         try:
             if personalize_report_card(
                 record,
