@@ -23,7 +23,9 @@ from id_card_maker import (
     custom_title_case,
 )
 
-DEFAULT_TEMPLATE_ROOT = Path(r"\\\\pixartnas\\home\\INTERNAL_PROCESSING\\ALL REPORT CARD SRC")
+print(Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL REPORT CARD SRC\149\FRONT_UKG.svg").exists())
+
+DEFAULT_TEMPLATE_ROOT = Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL REPORT CARD SRC")
 DEFAULT_OUTPUT_ROOT = Path("Report cards")
 
 
@@ -72,12 +74,13 @@ def _find_class_template(template_dir: Path, prefix: str, class_name: str) -> Op
 def _resolve_template(template_dir: Path, prefix: str, class_name: str) -> Optional[Path]:
     class_specific = _find_class_template(template_dir, prefix, class_name)
     if class_specific is not None:
+        print("class_specific", class_specific)
         return class_specific
     for extension in (".svg", ".SVG"):
-        candidate = template_dir / f"{prefix}{extension}"
+        candidate = template_dir / f"{prefix}_{class_name}{extension}"
+        print("candidate", candidate)
         if candidate.exists():
             return candidate
-    return None
 
 
 def _normalise_directory_name(value: str) -> str:
@@ -97,7 +100,7 @@ def _resolve_template_directory(
 
     normalised_school_id = _normalise_string(school_id)
     normalised_school_name = _normalise_string(school_name)
-
+    print("template", DEFAULT_TEMPLATE_ROOT)
     if normalised_school_id:
         direct = template_root / normalised_school_id
         if direct.is_dir():
@@ -192,17 +195,22 @@ def personalize_report_card(
     if not user_id:
         return False
 
-    template_dir = _resolve_template_directory(template_root, school_id, school_name_raw)
+    template_dir = template_root / school_id
+    print("template dir", template_dir)
     if template_dir is None:
         raise TemplateNotFoundError(
             f"Template directory not found for school: {school_id}"
         )
+    
 
     class_name = _normalise_string(record.get("class_name"))
-    front_template = _resolve_template(template_dir, "FRONT", class_name)
+    front_template = _resolve_template(template_dir, "FRONT", class_name.replace("FRONT_", ""))
     back_template = _resolve_template(template_dir, "BACK", class_name)
 
-    if front_template is None and back_template is None:
+    print("front template", front_template)
+    print("back template", back_template)
+
+    if not front_template and not back_template:
         raise TemplateNotFoundError(f"No SVG templates found for school: {school_name_raw}")
 
     first_name = _normalise_string(record.get("first_name"))
@@ -364,6 +372,8 @@ def generate_report_cards(
             print(exc)
             continue
     return count
+
+print("template", DEFAULT_TEMPLATE_ROOT)
 
 
 def load_records_from_workbook(workbook_path: Path) -> Iterator[Dict[str, object]]:
