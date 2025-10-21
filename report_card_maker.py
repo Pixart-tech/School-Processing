@@ -10,23 +10,26 @@ from id_card_maker import (
     DEFAULT_PHOTO_ROOT,
     TemplateNotFoundError,
     _build_child_output_base,
+    _candidate_template_directories,
     _copy_photo,
     _ensure_directory,
+    _extract_outer_code_prefix,
     _format_date,
+    _get_temp_working_dir,
     _guardian_type,
     _is_missing,
     _normalise_string,
     _prepare_working_directory,
     _process_svg,
     _sanitize_filename_component,
+    _working_file_path,
     clean_branch_name,
     custom_title_case,
 )
 
-print(Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL REPORT CARD SRC\149\FRONT_UKG.svg").exists())
-
 DEFAULT_TEMPLATE_ROOT = Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL REPORT CARD SRC")
 DEFAULT_OUTPUT_ROOT = Path("Report cards")
+REPORT_CARD_WORKING_SUBDIR = "ReportCardWorking"
 
 
 def _generate_class_variants(class_name: str) -> Sequence[str]:
@@ -74,106 +77,11 @@ def _find_class_template(template_dir: Path, prefix: str, class_name: str) -> Op
 def _resolve_template(template_dir: Path, prefix: str, class_name: str) -> Optional[Path]:
     class_specific = _find_class_template(template_dir, prefix, class_name)
     if class_specific is not None:
-        print("class_specific", class_specific)
         return class_specific
     for extension in (".svg", ".SVG"):
         candidate = template_dir / f"{prefix}_{class_name}{extension}"
-        print("candidate", candidate)
         if candidate.exists():
             return candidate
-
-
-def _normalise_directory_name(value: str) -> str:
-    return re.sub(r"[^0-9a-z]+", "_", value.lower()).strip("_")
-
-
-def _resolve_template_directory(
-    template_root: Path, school_id: str, school_name: str
-) -> Optional[Path]:
-    """Locate the template directory for a school.
-
-    Some schools store their templates in folders that include either the
-    school name, the school ID, or both.  When the direct ``school_id``
-    lookup fails we attempt to locate a directory whose normalised name
-    contains the required pieces of information.
-    """
-
-    normalised_school_id = _normalise_string(school_id)
-    normalised_school_name = _normalise_string(school_name)
-    print("template", DEFAULT_TEMPLATE_ROOT)
-    if normalised_school_id:
-        direct = template_root / normalised_school_id
-        if direct.is_dir():
-            return direct
-
-    sanitized_school_name = (
-        _sanitize_filename_component(normalised_school_name, "school")
-        if normalised_school_name
-        else ""
-    )
-    normalised_school_key = (
-        _normalise_directory_name(sanitized_school_name)
-        if sanitized_school_name
-        else ""
-    )
-    school_name_tokens: Set[str] = set()
-    if normalised_school_key:
-        school_name_tokens = {
-            token for token in normalised_school_key.split("_") if token
-        }
-
-    school_id_variants: Set[str] = set()
-    if normalised_school_id:
-        lower_id = normalised_school_id.lower()
-        school_id_variants.add(lower_id)
-        stripped = lower_id.lstrip("0")
-        if stripped:
-            school_id_variants.add(stripped)
-        if lower_id.isdigit():
-            school_id_variants.add(lower_id.zfill(3))
-
-    best_match: Optional[Path] = None
-    best_score = 0
-
-    try:
-        candidates = list(template_root.iterdir())
-    except FileNotFoundError:
-        candidates = []
-
-    for entry in candidates:
-        if not entry.is_dir():
-            continue
-
-        entry_key = _normalise_directory_name(entry.name)
-        if not entry_key:
-            continue
-
-        entry_tokens = {token for token in entry_key.split("_") if token}
-
-        score = 0
-
-        if school_id_variants and (school_id_variants & entry_tokens):
-            score += 2
-
-        if normalised_school_key:
-            if normalised_school_key in entry_key:
-                score += 1
-            elif school_name_tokens and (school_name_tokens & entry_tokens):
-                score += 1
-
-        if score > best_score:
-            best_match = entry
-            best_score = score
-
-    if best_match is not None:
-        return best_match
-
-    if sanitized_school_name:
-        fallback = template_root / sanitized_school_name
-        if fallback.is_dir():
-            return fallback
-
-    return None
 
 
 def personalize_report_card(
@@ -195,22 +103,36 @@ def personalize_report_card(
     if not user_id:
         return False
 
-    template_dir = template_root / school_id
-    print("template dir", template_dir)
-    if template_dir is None:
+    outer_prefix = _extract_outer_code_prefix(record.get("outer_code"))
+    if not outer_prefix:
+        return False
+
+    template_group_dir = template_root / outer_prefix
+    if not template_group_dir.is_dir():
         raise TemplateNotFoundError(
-            f"Template directory not found for school: {school_id}"
+            f"Template directory not found for outer code prefix: {outer_prefix}"
         )
-    
 
     class_name = _normalise_string(record.get("class_name"))
-    front_template = _resolve_template(template_dir, "FRONT", class_name.replace("FRONT_", ""))
-    back_template = _resolve_template(template_dir, "BACK", class_name)
+    class_name_for_front = class_name.replace("FRONT_", "")
 
-    print("front template", front_template)
-    print("back template", back_template)
+    template_dir: Optional[Path] = None
+    front_template: Optional[Path] = None
+    back_template: Optional[Path] = None
 
-    if not front_template and not back_template:
+    for candidate in _candidate_template_directories(
+        template_group_dir, school_id, school_name_raw
+    ):
+        front_candidate = _resolve_template(candidate, "FRONT", class_name_for_front)
+        back_candidate = _resolve_template(candidate, "BACK", class_name)
+        if front_candidate is None and back_candidate is None:
+            continue
+        template_dir = candidate
+        front_template = front_candidate
+        back_template = back_candidate
+        break
+
+    if template_dir is None:
         raise TemplateNotFoundError(f"No SVG templates found for school: {school_name_raw}")
 
     first_name = _normalise_string(record.get("first_name"))
@@ -220,11 +142,12 @@ def personalize_report_card(
     school_folder_name = f"{_sanitize_filename_component(school_id, 'school')}_{_sanitize_filename_component(school_name_raw, 'school')}"
     school_output_dir = output_root / school_folder_name
     child_output_dir = school_output_dir / child_output_base
-    photos_output_dir = child_output_dir / "working" / "images"
 
     _ensure_directory(child_output_dir)
-    working_dir = child_output_dir / "working"
+
+    working_dir = _get_temp_working_dir(outer_prefix, REPORT_CARD_WORKING_SUBDIR)
     _prepare_working_directory(template_dir, working_dir)
+    photos_output_dir = working_dir / "images"
 
     blood_group = _normalise_string(record.get("blood_group"))
     age = _normalise_string(record.get("age"))
@@ -326,14 +249,14 @@ def personalize_report_card(
     generated = False
 
     if front_template is not None:
-        front_svg_path = working_dir / front_template.name
+        front_svg_path = _working_file_path(front_template, template_dir, working_dir)
         _process_svg(front_svg_path, text_updates_front, image_updates_front, address_updates_front)
         front_pdf_path = child_output_dir / f"{child_output_base}_FRONT.pdf"
         callInkscape(str(front_svg_path), str(front_pdf_path))
         generated = True
 
     if back_template is not None:
-        back_svg_path = working_dir / back_template.name
+        back_svg_path = _working_file_path(back_template, template_dir, working_dir)
         _process_svg(back_svg_path, text_updates_back, image_updates_back, address_updates_back)
         back_pdf_path = child_output_dir / f"{child_output_base}_BACK.pdf"
         callInkscape(str(back_svg_path), str(back_pdf_path))
@@ -372,8 +295,6 @@ def generate_report_cards(
             print(exc)
             continue
     return count
-
-print("template", DEFAULT_TEMPLATE_ROOT)
 
 
 def load_records_from_workbook(workbook_path: Path) -> Iterator[Dict[str, object]]:
