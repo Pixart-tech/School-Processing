@@ -122,6 +122,10 @@ def _set_multiline_text(element: Element, lines: Sequence[str]) -> None:
         element.appendChild(tspan)
 
 
+def _format_float(value: float) -> str:
+    return ("{:.4f}".format(value)).rstrip("0").rstrip(".")
+
+
 def _set_font_size(element: Element, font_size: float) -> None:
     style = element.getAttribute("style") or ""
     if FONT_SIZE_PATTERN.search(style):
@@ -131,6 +135,7 @@ def _set_font_size(element: Element, font_size: float) -> None:
             style += ";"
         style += f"font-size:{font_size}px"
     element.setAttribute("style", style)
+    element.setAttribute("font-size", _format_float(font_size))
 
 
 def _extract_font_family(element: Element) -> str:
@@ -139,6 +144,35 @@ def _extract_font_family(element: Element) -> str:
     if match:
         return match.group(1).strip().strip("\"'")
     return ""
+
+
+def _parse_length(value: str) -> Optional[float]:
+    if not value:
+        return None
+    stripped = value.strip()
+    if stripped.lower().endswith("px"):
+        stripped = stripped[:-2]
+    try:
+        return float(stripped)
+    except ValueError:
+        return None
+
+
+def _extract_font_size(element: Element) -> Optional[float]:
+    style = element.getAttribute("style") or ""
+    match = FONT_SIZE_PATTERN.search(style)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
+
+    if element.hasAttribute("font-size"):
+        length = _parse_length(element.getAttribute("font-size"))
+        if length is not None:
+            return length
+
+    return None
 
 
 def _adjust_font_size(element: Element, text_length: int, max_characters: Optional[int], reduction: float) -> None:
@@ -170,10 +204,6 @@ def _adjust_font_size(element: Element, text_length: int, max_characters: Option
             style += ";"
         style += f"font-size:{new_size}px"
     element.setAttribute("style", style)
-
-
-def _format_float(value: float) -> str:
-    return ("{:.4f}".format(value)).rstrip("0").rstrip(".")
 
 
 def _measure_text_width(font: ImageFont.FreeTypeFont, text: str) -> float:
@@ -257,15 +287,7 @@ def _fit_text_within_rect(
     if element.hasAttribute("transform"):
         element.removeAttribute("transform")
 
-    font_size_match = FONT_SIZE_PATTERN.search(element.getAttribute("style") or "")
-    if font_size_match:
-        try:
-            font_size = float(font_size_match.group(1))
-        except ValueError:
-            font_size = None
-    else:
-        font_size = None
-
+    font_size = _extract_font_size(element)
     if font_size is None:
         font_size = 38.0
 
@@ -334,14 +356,11 @@ def _apply_two_line_layout(
         return
 
     if current_size is None:
-        font_size_match = FONT_SIZE_PATTERN.search(element.getAttribute("style") or "")
-        if font_size_match:
-            try:
-                current_size = float(font_size_match.group(1))
-            except ValueError:
-                current_size = None
-    if current_size is None:
-        current_size = 38.0
+        extracted_size = _extract_font_size(element)
+        if extracted_size is not None:
+            current_size = extracted_size
+        else:
+            current_size = 38.0
 
     font_path = font_path or _resolve_font_path(element)
     effective_size = max(current_size, min_font_size)
