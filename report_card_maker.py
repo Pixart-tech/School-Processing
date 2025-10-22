@@ -8,6 +8,8 @@ from typing import Dict, Iterable, Iterator, Optional, Sequence, Set, Tuple
 from doc_maker import callInkscape
 from id_card_maker import (
     DEFAULT_PHOTO_ROOT,
+    DEFAULT_MAX_SCALE,
+    DEFAULT_MIN_SCALE,
     TemplateNotFoundError,
     _build_child_output_base,
     _copy_photo,
@@ -288,7 +290,7 @@ def personalize_report_card(
     mother_photo_name = _copy_photo(mother_photo_path, photos_output_dir) if mother_photo_path else None
 
     text_updates_front = {
-        "name": (full_name, 15, 0.6),
+        "name": (full_name, 15, 0.6, None, DEFAULT_MIN_SCALE, DEFAULT_MAX_SCALE),
         "grade": (class_name.upper(), 14, 0.5),
         "branch": (school_branch, 20, 0.5),
         "mcontact": (mother_contact, 14, 0.5),
@@ -302,7 +304,7 @@ def personalize_report_card(
     }
 
     text_updates_back = {
-        "name": (full_name, 15, 0.6),
+        "name": (full_name, 15, 0.6, None, DEFAULT_MIN_SCALE, DEFAULT_MAX_SCALE),
         "mcontact": (mother_contact, 15, 0.5),
         "fcontact": (father_contact, 15, 0.5),
         "fname": (father_name, 30, 0.3),
