@@ -629,7 +629,7 @@ def personalize_id_card(
     working_dir = child_output_dir / "working"
     _prepare_working_directory(template_dir, working_dir)
 
-    class_name = _normalise_string(record.get("class_name")).upper()
+    class_name = _normalise_string(record.get("class_name"))
     blood_group = _normalise_string(record.get("blood_group"))
     age = _normalise_string(record.get("age"))
     date_of_birth = _normalise_string(record.get("date_of_birth"))
