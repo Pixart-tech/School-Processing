@@ -6,7 +6,7 @@ import math
 import re
 import shutil
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Iterator, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
 from PIL import ImageFont
 from xml.dom.minidom import Document, Element, parse
 
@@ -93,7 +93,6 @@ FONT_SIZE_PATTERN = re.compile(r"font-size\s*:\s*([0-9.]+)px", re.IGNORECASE)
 FONT_FAMILY_PATTERN = re.compile(r"font-family\s*:\s*([^;]+)", re.IGNORECASE)
 
 MIN_FONT_SIZE = 9.0
-ABSOLUTE_MIN_FONT_SIZE = 4.0
 
 
 CENTER_ALIGNED_GROUPS = {"name", "fname", "mname", "fcontact", "mcontact"}
@@ -218,100 +217,6 @@ def _measure_text_width(font: ImageFont.FreeTypeFont, text: str) -> float:
     return float(right - left)
 
 
-def _load_font(font_path: Path, size: float) -> Optional[ImageFont.FreeTypeFont]:
-    try:
-        requested_size = max(1, int(math.ceil(size)))
-        return ImageFont.truetype(str(font_path), requested_size)
-    except OSError:
-        return None
-
-
-def _shrink_font_to_fit(
-    font_path: Path,
-    initial_size: float,
-    target_width: float,
-    measure: Callable[[ImageFont.FreeTypeFont], float],
-    *,
-    min_font_size: float = MIN_FONT_SIZE,
-    absolute_min_font_size: float = ABSOLUTE_MIN_FONT_SIZE,
-) -> Tuple[float, Optional[ImageFont.FreeTypeFont], Optional[float], bool]:
-    if not font_path.exists():
-        return initial_size, None, None, False
-
-    effective_size = max(initial_size, min_font_size)
-    font_at_size = _load_font(font_path, effective_size)
-    if font_at_size is None:
-        return effective_size, None, None, False
-
-    width_at_size = measure(font_at_size)
-    if width_at_size <= target_width:
-        return effective_size, font_at_size, width_at_size, True
-
-    min_size_candidate = min_font_size
-    font_at_min = _load_font(font_path, min_size_candidate)
-    if font_at_min is None:
-        return effective_size, font_at_size, width_at_size, False
-
-    width_at_min = measure(font_at_min)
-    if width_at_min <= target_width:
-        best_size = min_size_candidate
-        best_font = font_at_min
-        best_width = width_at_min
-        low = min_size_candidate
-        high = effective_size
-        for _ in range(60):
-            if high - low <= 0.1:
-                break
-            mid = (high + low) / 2
-            font_mid = _load_font(font_path, mid)
-            if font_mid is None:
-                break
-            width_mid = measure(font_mid)
-            if width_mid <= target_width:
-                best_size = mid
-                best_font = font_mid
-                best_width = width_mid
-                high = mid
-            else:
-                low = mid
-        return best_size, best_font, best_width, True
-
-    absolute_min = min(absolute_min_font_size, min_size_candidate)
-    if math.isclose(absolute_min, min_size_candidate, rel_tol=1e-9, abs_tol=1e-9):
-        return min_size_candidate, font_at_min, width_at_min, width_at_min <= target_width
-
-    font_at_absolute = _load_font(font_path, absolute_min)
-    if font_at_absolute is None:
-        return min_size_candidate, font_at_min, width_at_min, False
-
-    width_at_absolute = measure(font_at_absolute)
-    if width_at_absolute > target_width:
-        return absolute_min, font_at_absolute, width_at_absolute, False
-
-    best_size = absolute_min
-    best_font = font_at_absolute
-    best_width = width_at_absolute
-    low = absolute_min
-    high = min_size_candidate
-    for _ in range(60):
-        if high - low <= 0.1:
-            break
-        mid = (high + low) / 2
-        font_mid = _load_font(font_path, mid)
-        if font_mid is None:
-            break
-        width_mid = measure(font_mid)
-        if width_mid <= target_width:
-            best_size = mid
-            best_font = font_mid
-            best_width = width_mid
-            high = mid
-        else:
-            low = mid
-
-    return best_size, best_font, best_width, True
-
-
 def _resolve_font_path(element: Element) -> Path:
     font_family = _extract_font_family(element)
     base_path = Path(__file__).resolve().parent
@@ -427,22 +332,31 @@ def _fit_text_within_rect(
 
     current_size = max(float(font_size), min_font_size)
 
-    adjusted_size, _, final_width, fits = _shrink_font_to_fit(
-        font_path,
-        current_size,
-        rect_width,
-        lambda loaded_font: _measure_text_width(loaded_font, text),
-        min_font_size=min_font_size,
-    )
+    try:
+        font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
+    except OSError:
+        return False, rect, current_size, rect_width, rect_height, center_x, center_y, font_path
 
-    adjusted_size = max(adjusted_size, ABSOLUTE_MIN_FONT_SIZE)
-    _set_font_size(element, round(adjusted_size, 2))
+    text_width = _measure_text_width(font, text)
+
+    while text_width > rect_width and current_size > min_font_size:
+        new_size = max(current_size - 0.2, min_font_size)
+        if math.isclose(new_size, current_size, rel_tol=1e-3, abs_tol=1e-3):
+            break
+        current_size = new_size
+        try:
+            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
+        except OSError:
+            break
+        text_width = _measure_text_width(font, text)
+
+    _set_font_size(element, round(current_size, 2))
     element.setAttribute("y", _format_float(center_y))
 
     return (
-        bool(fits and final_width is not None and final_width <= rect_width),
+        text_width <= rect_width,
         rect,
-        adjusted_size,
+        current_size,
         rect_width,
         rect_height,
         center_x,
@@ -489,19 +403,30 @@ def _apply_two_line_layout(
     font_for_metrics: Optional[ImageFont.FreeTypeFont] = None
 
     if font_path and font_path.exists():
-        effective_size, font_for_metrics, _, _ = _shrink_font_to_fit(
-            font_path,
-            effective_size,
-            rect_width,
-            lambda loaded_font: max(
-                _measure_text_width(loaded_font, line) for line in lines
-            ),
-            min_font_size=min_font_size,
-        )
-    else:
-        effective_size = max(effective_size, min_font_size)
+        try:
+            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
+        except OSError:
+            font = None
 
-    effective_size = max(effective_size, ABSOLUTE_MIN_FONT_SIZE)
+        if font is not None:
+            font_for_metrics = font
+            max_width = max(_measure_text_width(font, line) for line in lines)
+            while max_width > rect_width and effective_size > min_font_size:
+                new_size = max(effective_size - 0.2, min_font_size)
+                if math.isclose(new_size, effective_size, rel_tol=1e-3, abs_tol=1e-3):
+                    break
+                effective_size = new_size
+                try:
+                    font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
+                except OSError:
+                    font = None
+                    break
+                if font is None:
+                    break
+                font_for_metrics = font
+                max_width = max(_measure_text_width(font, line) for line in lines)
+
+    effective_size = max(effective_size, min_font_size)
     _set_font_size(element, round(effective_size, 2))
 
     element.setAttribute("text-anchor", "middle")
