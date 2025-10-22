@@ -464,7 +464,7 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
             _apply_alignment(text_element, alignment)
 
         if (
-            group_id == "name"
+            group_id in {"name", "fname", "mname"}
             and text.strip()
             and fit_result is not None
             and not fit_result[0]
