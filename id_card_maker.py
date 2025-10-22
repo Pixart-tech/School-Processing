@@ -7,10 +7,10 @@ import re
 import shutil
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
-from PIL import ImageFont
 from xml.dom.minidom import Document, Element, parse
 
 from doc_maker import callInkscape
+from text_fit_util import _fit_text_within_rect
 
 
 DEFAULT_TEMPLATE_ROOT = Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL ID CARD SRC")
@@ -90,7 +90,6 @@ def clean_branch_name(value: str) -> str:
 
 
 FONT_SIZE_PATTERN = re.compile(r"font-size\s*:\s*([0-9.]+)px", re.IGNORECASE)
-FONT_FAMILY_PATTERN = re.compile(r"font-family\s*:\s*([^;]+)", re.IGNORECASE)
 
 MIN_FONT_SIZE = 9.0
 
@@ -120,25 +119,6 @@ def _set_multiline_text(element: Element, lines: Sequence[str]) -> None:
         tspan.setAttribute("dy", "1em")
         tspan.appendChild(document.createTextNode(line))
         element.appendChild(tspan)
-
-
-def _set_font_size(element: Element, font_size: float) -> None:
-    style = element.getAttribute("style") or ""
-    if FONT_SIZE_PATTERN.search(style):
-        style = FONT_SIZE_PATTERN.sub(f"font-size:{font_size}px", style)
-    else:
-        if style and not style.endswith(";"):
-            style += ";"
-        style += f"font-size:{font_size}px"
-    element.setAttribute("style", style)
-
-
-def _extract_font_family(element: Element) -> str:
-    style = element.getAttribute("style") or ""
-    match = FONT_FAMILY_PATTERN.search(style)
-    if match:
-        return match.group(1).strip().strip("\"'")
-    return ""
 
 
 def _adjust_font_size(element: Element, text_length: int, max_characters: Optional[int], reduction: float) -> None:
@@ -172,235 +152,35 @@ def _adjust_font_size(element: Element, text_length: int, max_characters: Option
     element.setAttribute("style", style)
 
 
-def _format_float(value: float) -> str:
-    return ("{:.4f}".format(value)).rstrip("0").rstrip(".")
-
-
-def _measure_text_width(font: ImageFont.FreeTypeFont, text: str) -> float:
-    if not text:
-        return 0.0
-    left, _, right, _ = font.getbbox(text)
-    return float(right - left)
-
-
-def _resolve_font_path(element: Element) -> Path:
-    font_family = _extract_font_family(element)
-    base_path = Path(__file__).resolve().parent
-    if font_family and "marvin" in font_family.lower():
-        candidate = base_path / "Marvin.ttf"
-        if candidate.exists():
-            return candidate
-    candidate = base_path / "PlaypenSans-Medium.ttf"
-    return candidate
-
-
-def _split_text_into_two_lines(text: str) -> Sequence[str]:
-    cleaned = text.strip()
-    if not cleaned:
-        return [""]
-
-    words = cleaned.split()
-    if len(words) <= 1:
-        midpoint = max(1, len(cleaned) // 2)
-        return [cleaned[:midpoint].strip(), cleaned[midpoint:].strip()]
-
-    best_index = 1
-    best_diff = float("inf")
-    for index in range(1, len(words)):
-        first_line = " ".join(words[:index])
-        second_line = " ".join(words[index:])
-        diff = abs(len(first_line) - len(second_line))
-        if diff < best_diff:
-            best_diff = diff
-            best_index = index
-
-    first = " ".join(words[:best_index]).strip()
-    second = " ".join(words[best_index:]).strip()
-    return [line for line in (first, second) if line]
-
-
-def _fit_text_within_rect(
-    group: Element,
-    element: Element,
-    text: str,
-    index: int,
-    *,
-    min_font_size: float = MIN_FONT_SIZE,
-):
-    rects = list(group.getElementsByTagName("rect"))
+def _find_matching_rect(rects: Sequence[Element], text_element: Element, index: int) -> Optional[Element]:
     if not rects:
-        return True, None, None, None, None, None, None, None
+        return None
 
-    rect = rects[index] if index < len(rects) else rects[0]
+    text_id = text_element.getAttribute("id").lower() if text_element.hasAttribute("id") else ""
+    if text_id.endswith("_text"):
+        target_id = text_id[:-5] + "_box"
+        for rect in rects:
+            rect_id = rect.getAttribute("id").lower() if rect.hasAttribute("id") else ""
+            if rect_id == target_id:
+                return rect
 
-    def _safe_float(attr: str) -> Optional[float]:
-        try:
-            return float(attr)
-        except (TypeError, ValueError):
-            return None
+    if index < len(rects):
+        return rects[index]
 
-    rect_width = _safe_float(rect.getAttribute("width") if rect.hasAttribute("width") else "")
-    rect_height = _safe_float(rect.getAttribute("height") if rect.hasAttribute("height") else "")
-    rect_x = _safe_float(rect.getAttribute("x") if rect.hasAttribute("x") else "") or 0.0
-    rect_y = _safe_float(rect.getAttribute("y") if rect.hasAttribute("y") else "") or 0.0
-
-    if rect_width is None or rect_width <= 0:
-        return True, rect, None, rect_width, rect_height, None, None, None
-
-    center_x = rect_x + rect_width / 2
-    center_y = rect_y + (rect_height / 2 if rect_height else 0.0)
-
-    element.setAttribute("text-anchor", "middle")
-    element.setAttribute("x", _format_float(center_x))
-    element.setAttribute("dominant-baseline", "middle")
-    element.setAttribute("y", _format_float(center_y))
-    if element.hasAttribute("transform"):
-        element.removeAttribute("transform")
-
-    font_size_match = FONT_SIZE_PATTERN.search(element.getAttribute("style") or "")
-    if font_size_match:
-        try:
-            font_size = float(font_size_match.group(1))
-        except ValueError:
-            font_size = None
-    else:
-        font_size = None
-
-    if font_size is None:
-        font_size = 38.0
-
-    font_path = _resolve_font_path(element)
-    if not font_path.exists():
-        return False, rect, font_size, rect_width, rect_height, center_x, center_y, font_path
-
-    current_size = max(float(font_size), min_font_size)
-
-    try:
-        font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
-    except OSError:
-        return False, rect, current_size, rect_width, rect_height, center_x, center_y, font_path
-
-    text_width = _measure_text_width(font, text)
-
-    while text_width > rect_width and current_size > min_font_size:
-        new_size = max(current_size - 0.2, min_font_size)
-        if math.isclose(new_size, current_size, rel_tol=1e-3, abs_tol=1e-3):
-            break
-        current_size = new_size
-        try:
-            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
-        except OSError:
-            break
-        text_width = _measure_text_width(font, text)
-
-    _set_font_size(element, round(current_size, 2))
-    element.setAttribute("y", _format_float(center_y))
-
-    return (
-        text_width <= rect_width,
-        rect,
-        current_size,
-        rect_width,
-        rect_height,
-        center_x,
-        center_y,
-        font_path,
-    )
-
-
-def _apply_two_line_layout(
-    element: Element,
-    text: str,
-    fit_result,
-    *,
-    min_font_size: float = MIN_FONT_SIZE,
-) -> None:
-    (
-        _,
-        rect,
-        current_size,
-        rect_width,
-        _rect_height,
-        center_x,
-        center_y,
-        font_path,
-    ) = fit_result
-
-    if rect is None or rect_width is None or rect_width <= 0 or center_x is None or center_y is None:
-        return
-
-    lines = _split_text_into_two_lines(text)
-    if len(lines) < 2:
-        return
-
-    if current_size is None:
-        font_size_match = FONT_SIZE_PATTERN.search(element.getAttribute("style") or "")
-        if font_size_match:
-            try:
-                current_size = float(font_size_match.group(1))
-            except ValueError:
-                current_size = None
-    if current_size is None:
-        current_size = 38.0
-
-    font_path = font_path or _resolve_font_path(element)
-    effective_size = max(current_size, min_font_size)
-
-    if font_path and font_path.exists():
-        try:
-            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
-        except OSError:
-            font = None
-
-        if font is not None:
-            max_width = max(_measure_text_width(font, line) for line in lines)
-            while max_width > rect_width and effective_size > min_font_size:
-                new_size = max(effective_size - 0.2, min_font_size)
-                if math.isclose(new_size, effective_size, rel_tol=1e-3, abs_tol=1e-3):
-                    break
-                effective_size = new_size
-                try:
-                    font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
-                except OSError:
-                    font = None
-                    break
-                max_width = max(_measure_text_width(font, line) for line in lines) if font else max_width
-
-    effective_size = max(effective_size, min_font_size)
-    _set_font_size(element, round(effective_size, 2))
-
-    element.setAttribute("text-anchor", "middle")
-    element.setAttribute("x", _format_float(center_x))
-    if element.hasAttribute("transform"):
-        element.removeAttribute("transform")
-
-    base_y = center_y - effective_size / 2
-    element.setAttribute("y", _format_float(base_y))
-    element.setAttribute("dominant-baseline", "alphabetic")
-
-    _set_multiline_text(element, lines)
+    return rects[0]
 
 
 def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
     text_elements = list(group.getElementsByTagName("text"))
-    group_id = group.getAttribute("id").lower() if group.hasAttribute("id") else ""
+    rects = list(group.getElementsByTagName("rect"))
 
     for index, text_element in enumerate(text_elements):
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
 
-        needs_fit = len(text) >= 12 or bool(group.getElementsByTagName("rect"))
-        fit_result = None
-        if needs_fit:
-            fit_result = _fit_text_within_rect(group, text_element, text, index)
-
-        if (
-            group_id == "name"
-            and text.strip()
-            and fit_result is not None
-            and not fit_result[0]
-        ):
-            _apply_two_line_layout(text_element, text, fit_result)
+        rect = _find_matching_rect(rects, text_element, index)
+        if rect is not None:
+            _fit_text_within_rect(text_element, rect, text)
 
 
 def _update_address_group(group: Element, text: str) -> None:
