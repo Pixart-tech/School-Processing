@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
 from PIL import ImageFont
-from xml.dom.minidom import Document, Element, parse
+from xml.dom.minidom import Document, Element, Node, parse
 
 from doc_maker import callInkscape
 
@@ -98,6 +98,73 @@ MULTILINE_MIN_FONT_SIZE = 6.0
 
 CENTER_ALIGNED_GROUPS = {"name", "fname", "mname", "fcontact", "mcontact"}
 LEFT_ALIGNED_GROUPS = {"grade"}
+
+
+_ALIGNMENT_CHAR_MAP = {"L": "left", "M": "center", "R": "right"}
+_ALIGNMENT_WORD_MAP = {
+    "LEFT": "left",
+    "RIGHT": "right",
+    "CENTER": "center",
+    "CENTRE": "center",
+    "MIDDLE": "center",
+}
+_ALIGNMENT_PREFIX_RE = re.compile(r"^\s*([LMR])(?:\b|[_\-\s:])", re.IGNORECASE)
+_ALIGNMENT_SUFFIX_RE = re.compile(r"(?:^|[_\-\s:])([LMR])\s*$", re.IGNORECASE)
+
+
+def _interpret_alignment_token(value: str) -> Optional[str]:
+    if not value:
+        return None
+
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+
+    upper = cleaned.upper()
+    if upper in _ALIGNMENT_WORD_MAP:
+        return _ALIGNMENT_WORD_MAP[upper]
+
+    if len(cleaned) == 1:
+        return _ALIGNMENT_CHAR_MAP.get(upper)
+
+    prefix_match = _ALIGNMENT_PREFIX_RE.match(cleaned)
+    if prefix_match:
+        return _ALIGNMENT_CHAR_MAP.get(prefix_match.group(1).upper())
+
+    suffix_match = _ALIGNMENT_SUFFIX_RE.search(cleaned)
+    if suffix_match:
+        return _ALIGNMENT_CHAR_MAP.get(suffix_match.group(1).upper())
+
+    tokens = re.split(r"[^A-Za-z]+", upper)
+    for token in tokens:
+        if not token:
+            continue
+        if token in _ALIGNMENT_WORD_MAP:
+            return _ALIGNMENT_WORD_MAP[token]
+        if len(token) == 1 and token in _ALIGNMENT_CHAR_MAP:
+            return _ALIGNMENT_CHAR_MAP[token]
+
+    return None
+
+
+def _resolve_layer_alignment(element: Element) -> Optional[str]:
+    current: Optional[Element] = element
+    while isinstance(current, Element):
+        tag_name = current.tagName.lower() if hasattr(current, "tagName") else ""
+        if tag_name in {"g", "text"}:
+            for attribute in ("inkscape:label", "id"):
+                if current.hasAttribute(attribute):
+                    alignment = _interpret_alignment_token(current.getAttribute(attribute))
+                    if alignment:
+                        return alignment
+
+        parent = current.parentNode
+        while parent is not None and parent.nodeType != Node.ELEMENT_NODE:
+            parent = parent.parentNode
+
+        current = parent if isinstance(parent, Element) else None
+
+    return None
 
 
 def _set_text(element: Element, text: str) -> None:
@@ -562,21 +629,25 @@ def _shrink_two_line_text(
 
 def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
     text_elements = list(group.getElementsByTagName("text"))
-    group_id = group.getAttribute("id").lower() if group.hasAttribute("id") else ""
-    alignment: Optional[str] = None
-    if group_id in LEFT_ALIGNED_GROUPS:
-        alignment = "left"
-    elif group_id in CENTER_ALIGNED_GROUPS:
-        alignment = "center"
+
+    base_alignment = _resolve_layer_alignment(group)
+    if base_alignment is None:
+        group_id = group.getAttribute("id").lower() if group.hasAttribute("id") else ""
+        if group_id in LEFT_ALIGNED_GROUPS:
+            base_alignment = "left"
+        elif group_id in CENTER_ALIGNED_GROUPS:
+            base_alignment = "center"
 
     for index, text_element in enumerate(text_elements):
+        element_alignment = _resolve_layer_alignment(text_element) or base_alignment
+
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
 
         needs_fit = len(text) >= 12 or bool(group.getElementsByTagName("rect"))
         fit_result = None
         if needs_fit:
-            fit_alignment = alignment or "center"
+            fit_alignment = element_alignment or "center"
             fit_result = _fit_text_within_rect(
                 group,
                 text_element,
@@ -585,15 +656,15 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
                 alignment=fit_alignment,
             )
 
-        if alignment:
-            _apply_alignment(text_element, alignment)
+        if element_alignment:
+            _apply_alignment(text_element, element_alignment)
 
         if (
             text.strip()
             and fit_result is not None
             and not fit_result[0]
         ):
-            fallback_alignment = alignment or "center"
+            fallback_alignment = element_alignment or "center"
             fallback_result = _apply_two_line_layout(
                 text_element,
                 text,
@@ -624,8 +695,12 @@ def _update_address_group(group: Element, text: str) -> None:
     if not lines:
         lines = [""]
 
+    base_alignment = _resolve_layer_alignment(group) or "left"
+
     for text_element in group.getElementsByTagName("text"):
-        _apply_alignment(text_element, "left")
+        element_alignment = _resolve_layer_alignment(text_element) or base_alignment
+        if element_alignment:
+            _apply_alignment(text_element, element_alignment)
         _set_multiline_text(text_element, lines)
 
 
