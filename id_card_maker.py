@@ -95,6 +95,10 @@ FONT_FAMILY_PATTERN = re.compile(r"font-family\s*:\s*([^;]+)", re.IGNORECASE)
 MIN_FONT_SIZE = 9.0
 
 
+CENTER_ALIGNED_GROUPS = {"name", "fname", "mname", "fcontact", "mcontact"}
+LEFT_ALIGNED_GROUPS = {"grade"}
+
+
 def _set_text(element: Element, text: str) -> None:
     while element.firstChild:
         element.removeChild(element.firstChild)
@@ -249,6 +253,16 @@ def _split_text_into_two_lines(text: str) -> Sequence[str]:
     return [line for line in (first, second) if line]
 
 
+def _apply_alignment(element: Element, alignment: str) -> None:
+    alignment = alignment.lower()
+    if alignment == "center":
+        element.setAttribute("text-anchor", "middle")
+    elif alignment == "right":
+        element.setAttribute("text-anchor", "end")
+    elif alignment == "left":
+        element.setAttribute("text-anchor", "start")
+
+
 def _fit_text_within_rect(
     group: Element,
     element: Element,
@@ -256,6 +270,7 @@ def _fit_text_within_rect(
     index: int,
     *,
     min_font_size: float = MIN_FONT_SIZE,
+    alignment: str = "center",
 ):
     rects = list(group.getElementsByTagName("rect"))
     if not rects:
@@ -271,17 +286,37 @@ def _fit_text_within_rect(
 
     rect_width = _safe_float(rect.getAttribute("width") if rect.hasAttribute("width") else "")
     rect_height = _safe_float(rect.getAttribute("height") if rect.hasAttribute("height") else "")
-    rect_x = _safe_float(rect.getAttribute("x") if rect.hasAttribute("x") else "") or 0.0
-    rect_y = _safe_float(rect.getAttribute("y") if rect.hasAttribute("y") else "") or 0.0
+    raw_rect_x = _safe_float(rect.getAttribute("x") if rect.hasAttribute("x") else "")
+    raw_rect_y = _safe_float(rect.getAttribute("y") if rect.hasAttribute("y") else "")
+    rect_x_for_center = raw_rect_x if raw_rect_x is not None else 0.0
+    rect_y_for_center = raw_rect_y if raw_rect_y is not None else 0.0
 
     if rect_width is None or rect_width <= 0:
         return True, rect, None, rect_width, rect_height, None, None, None
 
-    center_x = rect_x + rect_width / 2
-    center_y = rect_y + (rect_height / 2 if rect_height else 0.0)
+    center_x = rect_x_for_center + rect_width / 2
+    center_y = rect_y_for_center + (rect_height / 2 if rect_height else 0.0)
 
-    element.setAttribute("text-anchor", "middle")
-    element.setAttribute("x", _format_float(center_x))
+    alignment = alignment.lower()
+    if alignment == "left":
+        x_target = raw_rect_x
+        if x_target is None:
+            existing_x = _parse_length(element.getAttribute("x") if element.hasAttribute("x") else "")
+            x_target = existing_x if existing_x is not None else center_x
+        element.setAttribute("text-anchor", "start")
+        element.setAttribute("x", _format_float(x_target))
+    elif alignment == "right":
+        if raw_rect_x is not None and rect_width is not None:
+            x_target = raw_rect_x + rect_width
+        else:
+            existing_x = _parse_length(element.getAttribute("x") if element.hasAttribute("x") else "")
+            x_target = existing_x if existing_x is not None else center_x
+        element.setAttribute("text-anchor", "end")
+        element.setAttribute("x", _format_float(x_target))
+    else:
+        element.setAttribute("text-anchor", "middle")
+        element.setAttribute("x", _format_float(center_x))
+
     element.setAttribute("dominant-baseline", "middle")
     element.setAttribute("y", _format_float(center_y))
     if element.hasAttribute("transform"):
@@ -403,6 +438,11 @@ def _apply_two_line_layout(
 def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
     text_elements = list(group.getElementsByTagName("text"))
     group_id = group.getAttribute("id").lower() if group.hasAttribute("id") else ""
+    alignment: Optional[str] = None
+    if group_id in LEFT_ALIGNED_GROUPS:
+        alignment = "left"
+    elif group_id in CENTER_ALIGNED_GROUPS:
+        alignment = "center"
 
     for index, text_element in enumerate(text_elements):
         _set_text(text_element, text)
@@ -411,7 +451,17 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         needs_fit = len(text) >= 12 or bool(group.getElementsByTagName("rect"))
         fit_result = None
         if needs_fit:
-            fit_result = _fit_text_within_rect(group, text_element, text, index)
+            fit_alignment = alignment or "center"
+            fit_result = _fit_text_within_rect(
+                group,
+                text_element,
+                text,
+                index,
+                alignment=fit_alignment,
+            )
+
+        if alignment:
+            _apply_alignment(text_element, alignment)
 
         if (
             group_id == "name"
@@ -428,6 +478,7 @@ def _update_address_group(group: Element, text: str) -> None:
         lines = [""]
 
     for text_element in group.getElementsByTagName("text"):
+        _apply_alignment(text_element, "left")
         _set_multiline_text(text_element, lines)
 
 
