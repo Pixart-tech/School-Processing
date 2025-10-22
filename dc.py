@@ -91,6 +91,299 @@ def fontFam (elem):
     return font_size
 
 
+MIN_FONT_SIZE = 9.0
+
+
+def _format_float(value):
+    return ("{:.4f}".format(value)).rstrip("0").rstrip(".")
+
+
+def _clear_text(element):
+    while element.firstChild:
+        element.removeChild(element.firstChild)
+
+
+def _set_text_content(element, text):
+    _clear_text(element)
+    element.appendChild(element.ownerDocument.createTextNode(text))
+
+
+def _resolve_font_file(element):
+    font_family = fontFam(element)
+    if font_family and "marvin" in font_family.lower():
+        return "Marvin.ttf"
+    return "PlaypenSans-Medium.ttf"
+
+
+def _load_font(font_file, size):
+    try:
+        return ImageFont.truetype(font_file, max(1, int(math.floor(size))))
+    except OSError:
+        return None
+
+
+def _measure_text_width(font, text):
+    if font is None or not text:
+        return 0.0
+    left, _, right, _ = font.getbbox(text)
+    return float(right - left)
+
+
+def _split_text_into_two_lines(text):
+    cleaned = text.strip()
+    if not cleaned:
+        return [""]
+
+    words = cleaned.split()
+    if len(words) <= 1:
+        midpoint = max(1, len(cleaned) // 2)
+        return [cleaned[:midpoint].strip(), cleaned[midpoint:].strip()]
+
+    best_index = 1
+    best_diff = float("inf")
+    for index in range(1, len(words)):
+        first_line = " ".join(words[:index])
+        second_line = " ".join(words[index:])
+        diff = abs(len(first_line) - len(second_line))
+        if diff < best_diff:
+            best_diff = diff
+            best_index = index
+
+    first = " ".join(words[:best_index]).strip()
+    second = " ".join(words[best_index:]).strip()
+    return [line for line in (first, second) if line]
+
+
+def _set_two_line_centered_text(element, first_line, second_line, center_x, line_height=1.1):
+    _clear_text(element)
+    document = element.ownerDocument
+    x_value = _format_float(center_x)
+    half_step = line_height / 2.0
+
+    first_tspan = document.createElement("tspan")
+    first_tspan.setAttribute("x", x_value)
+    first_tspan.setAttribute("dy", f"-{_format_float(half_step)}em")
+    first_tspan.appendChild(document.createTextNode(first_line))
+    element.appendChild(first_tspan)
+
+    second_tspan = document.createElement("tspan")
+    second_tspan.setAttribute("x", x_value)
+    second_tspan.setAttribute("dy", f"{_format_float(line_height)}em")
+    second_tspan.appendChild(document.createTextNode(second_line))
+    element.appendChild(second_tspan)
+
+
+def _fit_text_within_rect(element, rect, text, base_size=None, min_scale=0.7, max_scale=1.1):
+    if rect is None:
+        _set_text_content(element, text)
+        return {
+            "fits": True,
+            "rect_width": None,
+            "rect_height": None,
+            "center_x": None,
+            "center_y": None,
+            "font_file": _resolve_font_file(element),
+            "current_size": base_size,
+            "base_size": base_size,
+            "min_size": None,
+            "max_size": None,
+        }
+
+    try:
+        rect_x = float(rect.getAttribute('x')) if rect.hasAttribute('x') else 0.0
+    except (TypeError, ValueError):
+        rect_x = 0.0
+    try:
+        rect_y = float(rect.getAttribute('y')) if rect.hasAttribute('y') else 0.0
+    except (TypeError, ValueError):
+        rect_y = 0.0
+    try:
+        rect_width = float(rect.getAttribute('width')) if rect.hasAttribute('width') else 0.0
+    except (TypeError, ValueError):
+        rect_width = 0.0
+    try:
+        rect_height = float(rect.getAttribute('height')) if rect.hasAttribute('height') else 0.0
+    except (TypeError, ValueError):
+        rect_height = 0.0
+
+    if rect_width <= 0:
+        _set_text_content(element, text)
+        return {
+            "fits": True,
+            "rect_width": rect_width,
+            "rect_height": rect_height,
+            "center_x": None,
+            "center_y": None,
+            "font_file": _resolve_font_file(element),
+            "current_size": base_size,
+            "base_size": base_size,
+            "min_size": None,
+            "max_size": None,
+        }
+
+    center_x = rect_x + rect_width / 2.0
+    center_y = rect_y + (rect_height / 2.0 if rect_height else 0.0)
+
+    element.setAttribute('text-anchor', 'middle')
+    element.setAttribute('dominant-baseline', 'middle')
+    element.setAttribute('x', _format_float(center_x))
+    element.setAttribute('y', _format_float(center_y))
+    if element.hasAttribute('transform'):
+        element.removeAttribute('transform')
+
+    style_size = fontSize(element)
+    try:
+        style_size = float(style_size)
+    except (TypeError, ValueError):
+        style_size = 38.0
+
+    if base_size is None:
+        base_size = style_size if style_size else 38.0
+
+    if base_size <= 0:
+        base_size = 1.0
+
+    font_file = _resolve_font_file(element)
+
+    scaled_min = base_size * min_scale
+    if base_size >= MIN_FONT_SIZE:
+        min_allowed = max(MIN_FONT_SIZE, scaled_min)
+    else:
+        min_allowed = scaled_min
+    max_allowed = base_size * max_scale
+    if max_allowed < base_size:
+        max_allowed = base_size
+
+    current_size = min(float(base_size), max_allowed)
+
+    font = _load_font(font_file, current_size)
+    if font is None:
+        set_font_size(element, round(current_size, 2))
+        _set_text_content(element, text)
+        return {
+            "fits": False,
+            "rect_width": rect_width,
+            "rect_height": rect_height,
+            "center_x": center_x,
+            "center_y": center_y,
+            "font_file": font_file,
+            "current_size": current_size,
+            "base_size": base_size,
+            "min_size": min_allowed,
+            "max_size": max_allowed,
+        }
+
+    text_width = _measure_text_width(font, text)
+    fits_width = text_width <= rect_width
+
+    if text_width <= rect_width * 0.95:
+        set_font_size(element, round(current_size, 2))
+        _set_text_content(element, text)
+        return {
+            "fits": fits_width,
+            "rect_width": rect_width,
+            "rect_height": rect_height,
+            "center_x": center_x,
+            "center_y": center_y,
+            "font_file": font_file,
+            "current_size": current_size,
+            "base_size": base_size,
+            "min_size": min_allowed,
+            "max_size": max_allowed,
+        }
+
+    while text_width > rect_width and current_size > min_allowed:
+        new_size = max(current_size - 0.2, min_allowed)
+        if math.isclose(new_size, current_size, rel_tol=1e-3, abs_tol=1e-3):
+            current_size = new_size
+            break
+        current_size = new_size
+        font = _load_font(font_file, current_size)
+        if font is None:
+            break
+        text_width = _measure_text_width(font, text)
+
+    set_font_size(element, round(current_size, 2))
+    _set_text_content(element, text)
+
+    return {
+        "fits": text_width <= rect_width,
+        "rect_width": rect_width,
+        "rect_height": rect_height,
+        "center_x": center_x,
+        "center_y": center_y,
+        "font_file": font_file,
+        "current_size": current_size,
+        "base_size": base_size,
+        "min_size": min_allowed,
+        "max_size": max_allowed,
+    }
+
+
+def _apply_two_line_layout(element, text, fit_result):
+    rect_width = fit_result.get("rect_width")
+    rect_height = fit_result.get("rect_height")
+    center_x = fit_result.get("center_x")
+    center_y = fit_result.get("center_y")
+    font_file = fit_result.get("font_file")
+
+    if not rect_width or rect_width <= 0 or center_x is None or center_y is None:
+        return
+
+    lines = _split_text_into_two_lines(text)
+    if len(lines) < 2:
+        return
+
+    base_size = fit_result.get("base_size") or fit_result.get("current_size") or 38.0
+    min_allowed = fit_result.get("min_size")
+    max_allowed = fit_result.get("max_size")
+
+    if min_allowed is None:
+        scaled_min = base_size * 0.7
+        if base_size >= MIN_FONT_SIZE:
+            min_allowed = max(MIN_FONT_SIZE, scaled_min)
+        else:
+            min_allowed = scaled_min
+
+    if max_allowed is None:
+        max_allowed = max(base_size, base_size * 1.1)
+
+    effective_size = min(max(base_size, min_allowed), max_allowed)
+    line_spacing = 1.1
+    vertical_limit = None
+    if rect_height:
+        vertical_limit = rect_height / (1.0 + line_spacing)
+        effective_size = min(effective_size, max(min_allowed, vertical_limit))
+
+    font = _load_font(font_file, effective_size) if font_file else None
+    if font is not None:
+        max_width = max(_measure_text_width(font, line) for line in lines)
+        while (
+            (rect_width and max_width > rect_width)
+            or (vertical_limit is not None and effective_size > vertical_limit)
+        ) and effective_size > min_allowed:
+            new_size = max(effective_size - 0.2, min_allowed)
+            if math.isclose(new_size, effective_size, rel_tol=1e-3, abs_tol=1e-3):
+                effective_size = new_size
+                break
+            effective_size = new_size
+            font = _load_font(font_file, effective_size) if font_file else None
+            if font is None:
+                break
+            max_width = max(_measure_text_width(font, line) for line in lines)
+
+    effective_size = min(max(effective_size, min_allowed), max_allowed)
+    set_font_size(element, round(effective_size, 2))
+
+    element.setAttribute('text-anchor', 'middle')
+    element.setAttribute('dominant-baseline', 'middle')
+    element.setAttribute('x', _format_float(center_x))
+    element.setAttribute('y', _format_float(center_y))
+    if element.hasAttribute('transform'):
+        element.removeAttribute('transform')
+
+    _set_two_line_centered_text(element, lines[0], lines[1], center_x, line_height=line_spacing)
+
 #parse your XML-document
 def get_next_element_sibling(node):
     """Return the next sibling that is an element node (skips text, comments, etc.)."""
@@ -253,58 +546,20 @@ def personalize(outer_code,photoFolder ,id,school_color_code1,school_color_code2
             idx = 0
             
             for txt in txts:
-                
+
                 try:
-                    rect=rects[idx]
+                    rect = rects[idx]
                 except IndexError:
                     rect = None
 
                 idx = idx + 1
 
-                if rect != None:
-                    rx = float(rect.getAttribute('x'))
-                    ry = float(rect.getAttribute('y'))
-                    width = float(rect.getAttribute('width'))
-                    height = float(rect.getAttribute('height'))
-                    # print(width)
-                    # Calculate the center of the rect
-                    center_x = rx + width / 2
-                    center_y = ry + height / 2
+                display_name = name.title()
+                fit_result = _fit_text_within_rect(txt, rect, display_name)
 
-                    # Set text attributes for centering
-                    txt.setAttribute('text-anchor', 'middle')
-                    txt.setAttribute('x', str(center_x))
-                    txt.setAttribute('y', str(center_y))
-                    txt.setAttribute('dominant-baseline', 'middle')
-                    
-                    txt.setAttribute('transform', '')
-                    
-                txt.firstChild.data = name.title()
-                #set_font_family(txt,"Playpen Sans",500)
-                
-                if len(name)>12:
-                    font_size = math.floor(float(fontSize(txt)))
-                    font_fam = fontFam(txt)
-                    
-                    font_file = "PlaypenSans-Medium.ttf"
+                if not fit_result.get("fits"):
+                    _apply_two_line_layout(txt, display_name, fit_result)
 
-                    if 'Marvin' in font_fam:
-                         font_file = "Marvin.ttf"
-
-                    if font_size==None:
-                        font_size=38
-                    
-                    font = ImageFont.truetype(font_file, int(font_size))
-                    x,y,x1,y1 = font.getbbox(name.title())
-                    text_width = x1-x
-                    while int(text_width) > int(width) and int(font_size) > 1:
-                        font_size -= 0.2
-                        font = ImageFont.truetype(font_file, font_size)
-                        x,y,x1,y1 = font.getbbox(name.title())
-                        text_width = x1-x
-                    print(font_size)
-                    set_font_size(txt, font_size)
-             
         except KeyError:
             pass
         except Exception as e:
