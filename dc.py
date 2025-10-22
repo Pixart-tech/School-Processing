@@ -1,12 +1,13 @@
 import math
 from xml.dom.minidom import parse as p
-from PIL import ImageFont
 import re
 import subprocess
 sticker_path=None
 cmmn_doc=0
 
 import os,shutil,sys
+
+from text_fit_util import _fit_text_within_rect
 
 
 def _sanitize_for_path(value, fallback):
@@ -255,56 +256,22 @@ def personalize(outer_code,photoFolder ,id,school_color_code1,school_color_code2
             for txt in txts:
                 
                 try:
-                    rect=rects[idx]
+                    rect = rects[idx]
                 except IndexError:
                     rect = None
 
                 idx = idx + 1
 
-                if rect != None:
-                    rx = float(rect.getAttribute('x'))
-                    ry = float(rect.getAttribute('y'))
-                    width = float(rect.getAttribute('width'))
-                    height = float(rect.getAttribute('height'))
-                    # print(width)
-                    # Calculate the center of the rect
-                    center_x = rx + width / 2
-                    center_y = ry + height / 2
+                text_value = name.title()
 
-                    # Set text attributes for centering
-                    txt.setAttribute('text-anchor', 'middle')
-                    txt.setAttribute('x', str(center_x))
-                    txt.setAttribute('y', str(center_y))
-                    txt.setAttribute('dominant-baseline', 'middle')
-                    
-                    txt.setAttribute('transform', '')
-                    
-                txt.firstChild.data = name.title()
-                #set_font_family(txt,"Playpen Sans",500)
-                
-                if len(name)>12:
-                    font_size = math.floor(float(fontSize(txt)))
-                    font_fam = fontFam(txt)
-                    
-                    font_file = "PlaypenSans-Medium.ttf"
+                if rect is not None:
+                    _fit_text_within_rect(txt, rect, text_value)
+                else:
+                    if txt.firstChild:
+                        txt.firstChild.data = text_value
+                    else:
+                        txt.appendChild(txt.ownerDocument.createTextNode(text_value))
 
-                    if 'Marvin' in font_fam:
-                         font_file = "Marvin.ttf"
-
-                    if font_size==None:
-                        font_size=38
-                    
-                    font = ImageFont.truetype(font_file, int(font_size))
-                    x,y,x1,y1 = font.getbbox(name.title())
-                    text_width = x1-x
-                    while int(text_width) > int(width) and int(font_size) > 1:
-                        font_size -= 0.2
-                        font = ImageFont.truetype(font_file, font_size)
-                        x,y,x1,y1 = font.getbbox(name.title())
-                        text_width = x1-x
-                    print(font_size)
-                    set_font_size(txt, font_size)
-             
         except KeyError:
             pass
         except Exception as e:
