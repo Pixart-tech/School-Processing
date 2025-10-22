@@ -93,9 +93,6 @@ FONT_SIZE_PATTERN = re.compile(r"font-size\s*:\s*([0-9.]+)px", re.IGNORECASE)
 FONT_FAMILY_PATTERN = re.compile(r"font-family\s*:\s*([^;]+)", re.IGNORECASE)
 
 MIN_FONT_SIZE = 9.0
-DEFAULT_MIN_SCALE = 0.7
-DEFAULT_MAX_SCALE = 1.1
-FIT_WIDTH_THRESHOLD = 0.95
 
 
 def _set_text(element: Element, text: str) -> None:
@@ -144,17 +141,6 @@ def _extract_font_family(element: Element) -> str:
     return ""
 
 
-def _extract_font_size(element: Element) -> Optional[float]:
-    style = element.getAttribute("style") or ""
-    match = FONT_SIZE_PATTERN.search(style)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            return None
-    return None
-
-
 def _adjust_font_size(element: Element, text_length: int, max_characters: Optional[int], reduction: float) -> None:
     if max_characters is None or reduction <= 0:
         return
@@ -162,14 +148,22 @@ def _adjust_font_size(element: Element, text_length: int, max_characters: Option
     if overflow <= 0:
         return
 
-    base_size = _extract_font_size(element)
+    style = element.getAttribute("style")
+    match = FONT_SIZE_PATTERN.search(style)
+    if match:
+        try:
+            base_size = float(match.group(1))
+        except ValueError:
+            base_size = None
+    else:
+        base_size = None
+
     if base_size is None:
         # Default to a conservative font size if not specified.
         base_size = 12.0
 
     new_size = max(base_size - reduction * overflow, MIN_FONT_SIZE)
-    style = element.getAttribute("style")
-    if FONT_SIZE_PATTERN.search(style or ""):
+    if match:
         style = FONT_SIZE_PATTERN.sub(f"font-size:{new_size}px", style)
     else:
         if style and not style.endswith(";"):
@@ -180,13 +174,6 @@ def _adjust_font_size(element: Element, text_length: int, max_characters: Option
 
 def _format_float(value: float) -> str:
     return ("{:.4f}".format(value)).rstrip("0").rstrip(".")
-
-
-def _load_font(font_path: Path, size: float) -> Optional[ImageFont.FreeTypeFont]:
-    try:
-        return ImageFont.truetype(str(font_path), max(1, int(math.floor(size))))
-    except OSError:
-        return None
 
 
 def _measure_text_width(font: ImageFont.FreeTypeFont, text: str) -> float:
@@ -232,64 +219,17 @@ def _split_text_into_two_lines(text: str) -> Sequence[str]:
     return [line for line in (first, second) if line]
 
 
-def _compute_scale_bounds(
-    base_size: float,
-    min_scale: float,
-    max_scale: float,
-    min_font_size: float,
-) -> Tuple[float, float]:
-    base = max(base_size, 0.1)
-    min_scale = max(min_scale, 0.0)
-    max_scale = max(max_scale, min_scale)
-    scale_min = base * min_scale
-    scale_max = base * max_scale
-    if base >= min_font_size:
-        lower_bound = max(scale_min, min_font_size)
-    else:
-        lower_bound = scale_min
-    if lower_bound > scale_max:
-        lower_bound = scale_max
-    return lower_bound, scale_max
-
-
-def _set_centered_multiline_text(
-    element: Element,
-    lines: Sequence[str],
-    center_x: float,
-    center_y: float,
-    line_height: float,
-) -> None:
-    document = element.ownerDocument
-    while element.firstChild:
-        element.removeChild(element.firstChild)
-
-    if not lines:
-        lines = [""]
-
-    line_count = max(len(lines), 1)
-    for index, line in enumerate(lines):
-        tspan = document.createElement("tspan")
-        tspan.appendChild(document.createTextNode(line))
-        tspan.setAttribute("x", _format_float(center_x))
-        baseline = center_y + (index - (line_count - 1) / 2) * line_height
-        tspan.setAttribute("y", _format_float(baseline))
-        element.appendChild(tspan)
-
-
 def _fit_text_within_rect(
     group: Element,
     element: Element,
     text: str,
     index: int,
     *,
-    base_size: Optional[float] = None,
-    min_scale: float = DEFAULT_MIN_SCALE,
-    max_scale: float = DEFAULT_MAX_SCALE,
     min_font_size: float = MIN_FONT_SIZE,
 ):
     rects = list(group.getElementsByTagName("rect"))
     if not rects:
-        return True, None, None, None, None, None, None, None, base_size, min_scale, max_scale
+        return True, None, None, None, None, None, None, None
 
     rect = rects[index] if index < len(rects) else rects[0]
 
@@ -305,7 +245,7 @@ def _fit_text_within_rect(
     rect_y = _safe_float(rect.getAttribute("y") if rect.hasAttribute("y") else "") or 0.0
 
     if rect_width is None or rect_width <= 0:
-        return True, rect, None, rect_width, rect_height, None, None, None, base_size, min_scale, max_scale
+        return True, rect, None, rect_width, rect_height, None, None, None
 
     center_x = rect_x + rect_width / 2
     center_y = rect_y + (rect_height / 2 if rect_height else 0.0)
@@ -317,100 +257,54 @@ def _fit_text_within_rect(
     if element.hasAttribute("transform"):
         element.removeAttribute("transform")
 
-    base_size_value = base_size
-    if base_size_value is None:
-        base_size_value = _extract_font_size(element)
-    if base_size_value is None:
-        base_size_value = 38.0
-    base_size_value = max(float(base_size_value), 0.1)
+    font_size_match = FONT_SIZE_PATTERN.search(element.getAttribute("style") or "")
+    if font_size_match:
+        try:
+            font_size = float(font_size_match.group(1))
+        except ValueError:
+            font_size = None
+    else:
+        font_size = None
 
-    min_allowed, max_allowed = _compute_scale_bounds(
-        base_size_value, min_scale, max_scale, min_font_size
-    )
+    if font_size is None:
+        font_size = 38.0
 
     font_path = _resolve_font_path(element)
     if not font_path.exists():
-        return (
-            False,
-            rect,
-            base_size_value,
-            rect_width,
-            rect_height,
-            center_x,
-            center_y,
-            font_path,
-            base_size_value,
-            min_scale,
-            max_scale,
-        )
+        return False, rect, font_size, rect_width, rect_height, center_x, center_y, font_path
 
-    font = _load_font(font_path, base_size_value)
-    if font is None:
-        return (
-            False,
-            rect,
-            base_size_value,
-            rect_width,
-            rect_height,
-            center_x,
-            center_y,
-            font_path,
-            base_size_value,
-            min_scale,
-            max_scale,
-        )
+    current_size = max(float(font_size), min_font_size)
 
-    base_width = _measure_text_width(font, text)
-    final_size = base_size_value
-    final_width = base_width
+    try:
+        font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
+    except OSError:
+        return False, rect, current_size, rect_width, rect_height, center_x, center_y, font_path
 
-    if base_width > rect_width:
-        current_size = min(max(base_size_value, min_allowed), max_allowed)
-        if current_size > base_size_value:
-            current_size = base_size_value
-        working_font = _load_font(font_path, current_size) or font
-        final_width = _measure_text_width(working_font, text) if working_font else base_width
-        while final_width > rect_width and current_size > min_allowed:
-            new_size = max(current_size - 0.2, min_allowed)
-            if math.isclose(new_size, current_size, rel_tol=1e-3, abs_tol=1e-3):
-                break
-            current_size = new_size
-            trial_font = _load_font(font_path, current_size)
-            if trial_font is None:
-                break
-            working_font = trial_font
-            final_width = _measure_text_width(working_font, text)
-        final_size = current_size
-    else:
-        final_size = base_size_value
-        final_width = base_width
+    text_width = _measure_text_width(font, text)
 
-    if final_size < min_allowed:
-        final_size = min_allowed
-        loaded_font = _load_font(font_path, final_size)
-        if loaded_font is not None:
-            final_width = _measure_text_width(loaded_font, text)
-    if final_size > max_allowed:
-        final_size = max_allowed
-        loaded_font = _load_font(font_path, final_size)
-        if loaded_font is not None:
-            final_width = _measure_text_width(loaded_font, text)
+    while text_width > rect_width and current_size > min_font_size:
+        new_size = max(current_size - 0.2, min_font_size)
+        if math.isclose(new_size, current_size, rel_tol=1e-3, abs_tol=1e-3):
+            break
+        current_size = new_size
+        try:
+            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
+        except OSError:
+            break
+        text_width = _measure_text_width(font, text)
 
-    _set_font_size(element, round(final_size, 2))
+    _set_font_size(element, round(current_size, 2))
     element.setAttribute("y", _format_float(center_y))
 
     return (
-        final_width <= rect_width,
+        text_width <= rect_width,
         rect,
-        final_size,
+        current_size,
         rect_width,
         rect_height,
         center_x,
         center_y,
         font_path,
-        base_size_value,
-        min_scale,
-        max_scale,
     )
 
 
@@ -430,9 +324,6 @@ def _apply_two_line_layout(
         center_x,
         center_y,
         font_path,
-        base_size,
-        min_scale,
-        max_scale,
     ) = fit_result
 
     if rect is None or rect_width is None or rect_width <= 0 or center_x is None or center_y is None:
@@ -442,140 +333,66 @@ def _apply_two_line_layout(
     if len(lines) < 2:
         return
 
-    if base_size is None or base_size <= 0:
-        base_size = _extract_font_size(element) or current_size or 38.0
-    base_size = max(float(base_size), 0.1)
-
-    min_allowed, max_allowed = _compute_scale_bounds(
-        base_size, min_scale, max_scale, min_font_size
-    )
-
     if current_size is None:
-        current_size = _extract_font_size(element)
+        font_size_match = FONT_SIZE_PATTERN.search(element.getAttribute("style") or "")
+        if font_size_match:
+            try:
+                current_size = float(font_size_match.group(1))
+            except ValueError:
+                current_size = None
     if current_size is None:
-        current_size = base_size
+        current_size = 38.0
 
     font_path = font_path or _resolve_font_path(element)
-    base_width = 0.0
-    font_for_size = None
+    effective_size = max(current_size, min_font_size)
+
     if font_path and font_path.exists():
-        font_for_size = _load_font(font_path, base_size)
-        if font_for_size is not None:
-            base_width = max(_measure_text_width(font_for_size, line) for line in lines)
+        try:
+            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
+        except OSError:
+            font = None
 
-    final_size = base_size
-    final_width = base_width
-
-    if font_for_size is not None:
-        if base_width <= rect_width * FIT_WIDTH_THRESHOLD:
-            final_size = base_size
-            final_width = base_width
-        else:
-            target_size = min(max(base_size, min_allowed), max_allowed)
-            working_size = min(max(current_size, min_allowed), target_size)
-            working_font = _load_font(font_path, working_size) or font_for_size
-            final_width = (
-                max(_measure_text_width(working_font, line) for line in lines)
-                if working_font
-                else base_width
-            )
-
-            while working_size < target_size:
-                next_size = min(working_size + 0.2, target_size)
-                trial_font = _load_font(font_path, next_size)
-                if trial_font is None:
+        if font is not None:
+            max_width = max(_measure_text_width(font, line) for line in lines)
+            while max_width > rect_width and effective_size > min_font_size:
+                new_size = max(effective_size - 0.2, min_font_size)
+                if math.isclose(new_size, effective_size, rel_tol=1e-3, abs_tol=1e-3):
                     break
-                trial_width = max(_measure_text_width(trial_font, line) for line in lines)
-                if trial_width > rect_width:
+                effective_size = new_size
+                try:
+                    font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
+                except OSError:
+                    font = None
                     break
-                working_size = next_size
-                working_font = trial_font
-                final_width = trial_width
+                max_width = max(_measure_text_width(font, line) for line in lines) if font else max_width
 
-            while final_width > rect_width and working_size > min_allowed:
-                next_size = max(working_size - 0.2, min_allowed)
-                if math.isclose(next_size, working_size, rel_tol=1e-3, abs_tol=1e-3):
-                    break
-                trial_font = _load_font(font_path, next_size)
-                if trial_font is None:
-                    break
-                working_size = next_size
-                working_font = trial_font
-                final_width = max(_measure_text_width(working_font, line) for line in lines)
-
-            final_size = working_size
-    else:
-        final_size = min(max(current_size, min_allowed), max_allowed)
-
-    if final_size < min_allowed:
-        final_size = min_allowed
-    if final_size > max_allowed:
-        final_size = max_allowed
-
-    _set_font_size(element, round(final_size, 2))
+    effective_size = max(effective_size, min_font_size)
+    _set_font_size(element, round(effective_size, 2))
 
     element.setAttribute("text-anchor", "middle")
     element.setAttribute("x", _format_float(center_x))
-    element.setAttribute("y", _format_float(center_y))
-    element.setAttribute("dominant-baseline", "middle")
     if element.hasAttribute("transform"):
         element.removeAttribute("transform")
 
-    _set_centered_multiline_text(element, lines, center_x, center_y, final_size)
+    base_y = center_y - effective_size / 2
+    element.setAttribute("y", _format_float(base_y))
+    element.setAttribute("dominant-baseline", "alphabetic")
+
+    _set_multiline_text(element, lines)
 
 
-def _update_text_group(
-    group: Element,
-    text: str,
-    *,
-    max_characters: Optional[int] = None,
-    reduction: float = 0.0,
-    base_size: Optional[float] = None,
-    min_scale: float = DEFAULT_MIN_SCALE,
-    max_scale: float = DEFAULT_MAX_SCALE,
-) -> None:
+def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
     text_elements = list(group.getElementsByTagName("text"))
     group_id = group.getAttribute("id").lower() if group.hasAttribute("id") else ""
-
-    try:
-        min_scale_value = float(min_scale)
-    except (TypeError, ValueError):
-        min_scale_value = DEFAULT_MIN_SCALE
-    try:
-        max_scale_value = float(max_scale)
-    except (TypeError, ValueError):
-        max_scale_value = DEFAULT_MAX_SCALE
-    if max_scale_value < min_scale_value:
-        max_scale_value = min_scale_value
 
     for index, text_element in enumerate(text_elements):
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
 
-        element_base_size = base_size
-        if element_base_size is not None:
-            try:
-                element_base_size = float(element_base_size)
-            except (TypeError, ValueError):
-                element_base_size = None
-        if element_base_size is None:
-            element_base_size = _extract_font_size(text_element)
-        if element_base_size is None:
-            element_base_size = 38.0
-
         needs_fit = len(text) >= 12 or bool(group.getElementsByTagName("rect"))
         fit_result = None
         if needs_fit:
-            fit_result = _fit_text_within_rect(
-                group,
-                text_element,
-                text,
-                index,
-                base_size=element_base_size,
-                min_scale=min_scale_value,
-                max_scale=max_scale_value,
-                min_font_size=MIN_FONT_SIZE,
-            )
+            fit_result = _fit_text_within_rect(group, text_element, text, index)
 
         if (
             group_id == "name"
@@ -643,55 +460,18 @@ def _prepare_working_directory(template_dir: Path, working_dir: Path) -> None:
     shutil.copytree(template_dir, working_dir)
 
 
-def _process_svg(
-    svg_path: Path,
-    updates: Dict[str, Tuple[object, ...]],
-    image_updates: Dict[str, str],
-    address_updates: Dict[str, str],
-) -> bool:
+def _process_svg(svg_path: Path, updates: Dict[str, Tuple[str, Optional[int], float]], image_updates: Dict[str, str], address_updates: Dict[str, str]) -> bool:
     if svg_path is None or not svg_path.exists():
         return False
 
     doc = parse(str(svg_path))
     group_map = _find_group_map(doc)
 
-    for group_id, update in updates.items():
+    for group_id, (text, max_chars, reduction) in updates.items():
         group = group_map.get(group_id)
         if group is None:
             continue
-
-        text: str
-        max_chars: Optional[int]
-        reduction: float
-        base_size: Optional[float]
-        min_scale: float
-        max_scale: float
-
-        if isinstance(update, tuple):
-            length = len(update)
-            text = update[0] if length >= 1 else ""
-            max_chars = update[1] if length >= 2 else None
-            reduction = update[2] if length >= 3 else 0.0
-            base_size = update[3] if length >= 4 else None
-            min_scale = update[4] if length >= 5 else DEFAULT_MIN_SCALE
-            max_scale = update[5] if length >= 6 else DEFAULT_MAX_SCALE
-        else:
-            text = str(update)
-            max_chars = None
-            reduction = 0.0
-            base_size = None
-            min_scale = DEFAULT_MIN_SCALE
-            max_scale = DEFAULT_MAX_SCALE
-
-        _update_text_group(
-            group,
-            text,
-            max_characters=max_chars,
-            reduction=reduction,
-            base_size=base_size,
-            min_scale=min_scale,
-            max_scale=max_scale,
-        )
+        _update_text_group(group, text, max_characters=max_chars, reduction=reduction)
 
     for group_id, text in address_updates.items():
         group = group_map.get(group_id)
@@ -824,7 +604,7 @@ def personalize_id_card(
     mother_photo_name = _copy_photo(mother_photo_path, photos_output_dir) if mother_photo_path else None
 
     text_updates_front = {
-        "name": (full_name, 15, 0.6, None, DEFAULT_MIN_SCALE, DEFAULT_MAX_SCALE),
+        "name": (full_name, 15, 0.6),
         "grade": (class_name, 14, 0.5),
         "branch": (school_branch, 20, 0.5),
         "mcontact": (mother_contact, 14, 0.5),
@@ -838,7 +618,7 @@ def personalize_id_card(
     }
 
     text_updates_back = {
-        "name": (full_name, 15, 0.6, None, DEFAULT_MIN_SCALE, DEFAULT_MAX_SCALE),
+        "name": (full_name, 15, 0.6),
         "mcontact": (mother_contact, 15, 0.5),
         "fcontact": (father_contact, 15, 0.5),
         "fname": (father_name, 30, 0.3),
