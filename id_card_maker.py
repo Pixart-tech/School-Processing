@@ -400,6 +400,8 @@ def _apply_two_line_layout(
     font_path = font_path or _resolve_font_path(element)
     effective_size = max(current_size, min_font_size)
 
+    font_for_metrics: Optional[ImageFont.FreeTypeFont] = None
+
     if font_path and font_path.exists():
         try:
             font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
@@ -407,6 +409,7 @@ def _apply_two_line_layout(
             font = None
 
         if font is not None:
+            font_for_metrics = font
             max_width = max(_measure_text_width(font, line) for line in lines)
             while max_width > rect_width and effective_size > min_font_size:
                 new_size = max(effective_size - 0.2, min_font_size)
@@ -418,7 +421,10 @@ def _apply_two_line_layout(
                 except OSError:
                     font = None
                     break
-                max_width = max(_measure_text_width(font, line) for line in lines) if font else max_width
+                if font is None:
+                    break
+                font_for_metrics = font
+                max_width = max(_measure_text_width(font, line) for line in lines)
 
     effective_size = max(effective_size, min_font_size)
     _set_font_size(element, round(effective_size, 2))
@@ -429,6 +435,19 @@ def _apply_two_line_layout(
         element.removeAttribute("transform")
 
     base_y = center_y - effective_size / 2
+    if font_for_metrics is not None:
+        try:
+            ascent, descent = font_for_metrics.getmetrics()
+        except (AttributeError, OSError):
+            ascent = descent = None
+
+        if ascent is not None and descent is not None:
+            line_height = float(getattr(font_for_metrics, "size", effective_size))
+            total_height = float(ascent + descent)
+            if len(lines) > 1:
+                total_height += (len(lines) - 1) * line_height
+            base_y = center_y - total_height / 2 + float(ascent)
+
     element.setAttribute("y", _format_float(base_y))
     element.setAttribute("dominant-baseline", "alphabetic")
 
