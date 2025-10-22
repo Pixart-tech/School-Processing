@@ -6,7 +6,7 @@ import math
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Sequence
 from PIL import ImageFont
 from xml.dom.minidom import Document, Element, parse
 
@@ -101,7 +101,12 @@ def _set_text(element: Element, text: str) -> None:
     element.appendChild(element.ownerDocument.createTextNode(text))
 
 
-def _set_multiline_text(element: Element, lines: Sequence[str]) -> None:
+def _set_multiline_text(
+    element: Element,
+    lines: Sequence[str],
+    *,
+    line_height: str = "1em",
+) -> None:
     document = element.ownerDocument
     base_x = element.getAttribute("x") if element.hasAttribute("x") else ""
 
@@ -117,9 +122,37 @@ def _set_multiline_text(element: Element, lines: Sequence[str]) -> None:
         tspan = document.createElement("tspan")
         if base_x:
             tspan.setAttribute("x", base_x)
-        tspan.setAttribute("dy", "1em")
+        tspan.setAttribute("dy", line_height)
         tspan.appendChild(document.createTextNode(line))
         element.appendChild(tspan)
+
+
+def _set_two_line_centered_text(
+    element: Element,
+    first_line: str,
+    second_line: str,
+    center_x: float,
+    *,
+    line_height: float = 1.1,
+) -> None:
+    document = element.ownerDocument
+    while element.firstChild:
+        element.removeChild(element.firstChild)
+
+    x_value = _format_float(center_x)
+    half_step = line_height / 2.0
+
+    first_tspan = document.createElement("tspan")
+    first_tspan.setAttribute("x", x_value)
+    first_tspan.setAttribute("dy", f"-{_format_float(half_step)}em")
+    first_tspan.appendChild(document.createTextNode(first_line))
+    element.appendChild(first_tspan)
+
+    second_tspan = document.createElement("tspan")
+    second_tspan.setAttribute("x", x_value)
+    second_tspan.setAttribute("dy", f"{_format_float(line_height)}em")
+    second_tspan.appendChild(document.createTextNode(second_line))
+    element.appendChild(second_tspan)
 
 
 def _set_font_size(element: Element, font_size: float) -> None:
@@ -226,6 +259,9 @@ def _fit_text_within_rect(
     index: int,
     *,
     min_font_size: float = MIN_FONT_SIZE,
+    base_size: Optional[float] = None,
+    min_scale: float = 0.7,
+    max_scale: float = 1.1,
 ):
     rects = list(group.getElementsByTagName("rect"))
     if not rects:
@@ -266,25 +302,85 @@ def _fit_text_within_rect(
     else:
         font_size = None
 
+    if base_size is None:
+        if font_size is not None:
+            base_size = font_size
+        else:
+            base_size = 38.0
+
     if font_size is None:
-        font_size = 38.0
+        font_size = base_size
 
     font_path = _resolve_font_path(element)
     if not font_path.exists():
-        return False, rect, font_size, rect_width, rect_height, center_x, center_y, font_path
+        return (
+            False,
+            rect,
+            font_size,
+            rect_width,
+            rect_height,
+            center_x,
+            center_y,
+            font_path,
+            base_size,
+            None,
+            None,
+        )
 
-    current_size = max(float(font_size), min_font_size)
+    scaled_min = base_size * min_scale
+    if base_size >= min_font_size:
+        min_allowed_size = max(min_font_size, scaled_min)
+    else:
+        min_allowed_size = scaled_min
+    max_allowed_size = base_size * max_scale
+    if max_allowed_size < base_size:
+        max_allowed_size = base_size
+
+    current_size = float(base_size)
+    current_size = min(current_size, max_allowed_size)
 
     try:
         font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
     except OSError:
-        return False, rect, current_size, rect_width, rect_height, center_x, center_y, font_path
+        return (
+            False,
+            rect,
+            current_size,
+            rect_width,
+            rect_height,
+            center_x,
+            center_y,
+            font_path,
+            base_size,
+            min_allowed_size,
+            max_allowed_size,
+        )
 
     text_width = _measure_text_width(font, text)
+    fits_width = text_width <= rect_width if rect_width else True
 
-    while text_width > rect_width and current_size > min_font_size:
-        new_size = max(current_size - 0.2, min_font_size)
+    if rect_width and text_width <= rect_width * 0.95:
+        applied_size = round(current_size, 2)
+        _set_font_size(element, applied_size)
+        element.setAttribute("y", _format_float(center_y))
+        return (
+            fits_width,
+            rect,
+            current_size,
+            rect_width,
+            rect_height,
+            center_x,
+            center_y,
+            font_path,
+            base_size,
+            min_allowed_size,
+            max_allowed_size,
+        )
+
+    while rect_width and text_width > rect_width and current_size > min_allowed_size:
+        new_size = max(current_size - 0.2, min_allowed_size)
         if math.isclose(new_size, current_size, rel_tol=1e-3, abs_tol=1e-3):
+            current_size = new_size
             break
         current_size = new_size
         try:
@@ -293,11 +389,12 @@ def _fit_text_within_rect(
             break
         text_width = _measure_text_width(font, text)
 
-    _set_font_size(element, round(current_size, 2))
+    applied_size = round(current_size, 2)
+    _set_font_size(element, applied_size)
     element.setAttribute("y", _format_float(center_y))
 
     return (
-        text_width <= rect_width,
+        bool(rect_width and text_width <= rect_width),
         rect,
         current_size,
         rect_width,
@@ -305,6 +402,9 @@ def _fit_text_within_rect(
         center_x,
         center_y,
         font_path,
+        base_size,
+        min_allowed_size,
+        max_allowed_size,
     )
 
 
@@ -320,10 +420,13 @@ def _apply_two_line_layout(
         rect,
         current_size,
         rect_width,
-        _rect_height,
+        rect_height,
         center_x,
         center_y,
         font_path,
+        base_size,
+        min_allowed_size,
+        max_allowed_size,
     ) = fit_result
 
     if rect is None or rect_width is None or rect_width <= 0 or center_x is None or center_y is None:
@@ -343,8 +446,28 @@ def _apply_two_line_layout(
     if current_size is None:
         current_size = 38.0
 
+    if base_size is None:
+        base_size = current_size
+
+    if min_allowed_size is None:
+        scaled_min = base_size * 0.7
+        if base_size >= min_font_size:
+            min_allowed_size = max(min_font_size, scaled_min)
+        else:
+            min_allowed_size = scaled_min
+
+    if max_allowed_size is None:
+        max_allowed_size = max(base_size, base_size * 1.1)
+
     font_path = font_path or _resolve_font_path(element)
-    effective_size = max(current_size, min_font_size)
+    effective_size = min(max(base_size, min_allowed_size), max_allowed_size)
+
+    line_spacing = 1.1
+    vertical_limit = None
+    if rect_height:
+        vertical_limit = rect_height / (1.0 + line_spacing)
+        if vertical_limit is not None:
+            effective_size = min(effective_size, max(min_allowed_size, vertical_limit))
 
     if font_path and font_path.exists():
         try:
@@ -354,9 +477,13 @@ def _apply_two_line_layout(
 
         if font is not None:
             max_width = max(_measure_text_width(font, line) for line in lines)
-            while max_width > rect_width and effective_size > min_font_size:
-                new_size = max(effective_size - 0.2, min_font_size)
+            while (
+                (rect_width and max_width > rect_width)
+                or (vertical_limit is not None and effective_size > vertical_limit)
+            ) and effective_size > min_allowed_size:
+                new_size = max(effective_size - 0.2, min_allowed_size)
                 if math.isclose(new_size, effective_size, rel_tol=1e-3, abs_tol=1e-3):
+                    effective_size = new_size
                     break
                 effective_size = new_size
                 try:
@@ -364,9 +491,10 @@ def _apply_two_line_layout(
                 except OSError:
                     font = None
                     break
-                max_width = max(_measure_text_width(font, line) for line in lines) if font else max_width
+                if font is not None:
+                    max_width = max(_measure_text_width(font, line) for line in lines)
 
-    effective_size = max(effective_size, min_font_size)
+    effective_size = min(max(effective_size, min_allowed_size), max_allowed_size)
     _set_font_size(element, round(effective_size, 2))
 
     element.setAttribute("text-anchor", "middle")
@@ -374,14 +502,22 @@ def _apply_two_line_layout(
     if element.hasAttribute("transform"):
         element.removeAttribute("transform")
 
-    base_y = center_y - effective_size / 2
-    element.setAttribute("y", _format_float(base_y))
-    element.setAttribute("dominant-baseline", "alphabetic")
+    element.setAttribute("y", _format_float(center_y))
+    element.setAttribute("dominant-baseline", "middle")
 
-    _set_multiline_text(element, lines)
+    _set_two_line_centered_text(element, lines[0], lines[1], center_x, line_height=line_spacing)
 
 
-def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
+def _update_text_group(
+    group: Element,
+    text: str,
+    *,
+    max_characters: Optional[int] = None,
+    reduction: float = 0.0,
+    base_size: Optional[float] = None,
+    min_scale: float = 0.7,
+    max_scale: float = 1.1,
+) -> None:
     text_elements = list(group.getElementsByTagName("text"))
     group_id = group.getAttribute("id").lower() if group.hasAttribute("id") else ""
 
@@ -392,7 +528,15 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         needs_fit = len(text) >= 12 or bool(group.getElementsByTagName("rect"))
         fit_result = None
         if needs_fit:
-            fit_result = _fit_text_within_rect(group, text_element, text, index)
+            fit_result = _fit_text_within_rect(
+                group,
+                text_element,
+                text,
+                index,
+                base_size=base_size,
+                min_scale=min_scale,
+                max_scale=max_scale,
+            )
 
         if (
             group_id == "name"
@@ -460,18 +604,37 @@ def _prepare_working_directory(template_dir: Path, working_dir: Path) -> None:
     shutil.copytree(template_dir, working_dir)
 
 
-def _process_svg(svg_path: Path, updates: Dict[str, Tuple[str, Optional[int], float]], image_updates: Dict[str, str], address_updates: Dict[str, str]) -> bool:
+def _process_svg(
+    svg_path: Path,
+    updates: Dict[str, Sequence[object]],
+    image_updates: Dict[str, str],
+    address_updates: Dict[str, str],
+) -> bool:
     if svg_path is None or not svg_path.exists():
         return False
 
     doc = parse(str(svg_path))
     group_map = _find_group_map(doc)
 
-    for group_id, (text, max_chars, reduction) in updates.items():
+    for group_id, params in updates.items():
+        if not isinstance(params, (list, tuple)) or len(params) < 3:
+            continue
+        text, max_chars, reduction = params[:3]
+        base_size = params[3] if len(params) > 3 else None
+        min_scale = params[4] if len(params) > 4 else 0.7
+        max_scale = params[5] if len(params) > 5 else 1.1
         group = group_map.get(group_id)
         if group is None:
             continue
-        _update_text_group(group, text, max_characters=max_chars, reduction=reduction)
+        _update_text_group(
+            group,
+            text,
+            max_characters=max_chars,
+            reduction=reduction,
+            base_size=base_size,
+            min_scale=min_scale,
+            max_scale=max_scale,
+        )
 
     for group_id, text in address_updates.items():
         group = group_map.get(group_id)
@@ -604,7 +767,7 @@ def personalize_id_card(
     mother_photo_name = _copy_photo(mother_photo_path, photos_output_dir) if mother_photo_path else None
 
     text_updates_front = {
-        "name": (full_name, 15, 0.6),
+        "name": (full_name, 15, 0.6, None, 0.7, 1.1),
         "grade": (class_name, 14, 0.5),
         "branch": (school_branch, 20, 0.5),
         "mcontact": (mother_contact, 14, 0.5),
@@ -618,7 +781,7 @@ def personalize_id_card(
     }
 
     text_updates_back = {
-        "name": (full_name, 15, 0.6),
+        "name": (full_name, 15, 0.6, None, 0.7, 1.1),
         "mcontact": (mother_contact, 15, 0.5),
         "fcontact": (father_contact, 15, 0.5),
         "fname": (father_name, 30, 0.3),
