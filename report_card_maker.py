@@ -22,7 +22,6 @@ from id_card_maker import (
     clean_branch_name,
     custom_title_case,
 )
-from text_fit_util import _fit_text_within_rect  # Imported to keep shared text fitting accessible
 
 print(Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL REPORT CARD SRC\149\FRONT_UKG.svg").exists())
 
