@@ -279,31 +279,75 @@ def personalize(outer_code,photoFolder ,id,school_color_code1,school_color_code2
                     
                     txt.setAttribute('transform', '')
                     
-                txt.firstChild.data = name.title()
+                text_value = name.title()
+                txt.firstChild.data = text_value
                 #set_font_family(txt,"Playpen Sans",500)
-                
-                if len(name)>12:
-                    font_size = math.floor(float(fontSize(txt)))
-                    font_fam = fontFam(txt)
-                    
-                    font_file = "PlaypenSans-Medium.ttf"
 
-                    if 'Marvin' in font_fam:
-                         font_file = "Marvin.ttf"
+                font_size_attr = fontSize(txt)
+                try:
+                    base_font_size = float(font_size_attr)
+                except (TypeError, ValueError):
+                    base_font_size = 38.0
+                base_font_size = max(base_font_size, 0.1)
 
-                    if font_size==None:
-                        font_size=38
-                    
-                    font = ImageFont.truetype(font_file, int(font_size))
-                    x,y,x1,y1 = font.getbbox(name.title())
-                    text_width = x1-x
-                    while int(text_width) > int(width) and int(font_size) > 1:
-                        font_size -= 0.2
-                        font = ImageFont.truetype(font_file, font_size)
-                        x,y,x1,y1 = font.getbbox(name.title())
-                        text_width = x1-x
-                    print(font_size)
-                    set_font_size(txt, font_size)
+                font_fam = fontFam(txt)
+                font_file = "PlaypenSans-Medium.ttf"
+                if 'Marvin' in font_fam:
+                    font_file = "Marvin.ttf"
+
+                final_size = base_font_size
+
+                def _measure_font(size: float):
+                    try:
+                        measured_font = ImageFont.truetype(
+                            font_file, max(1, int(math.floor(size)))
+                        )
+                    except OSError:
+                        return None, 0.0
+                    x0, _y0, x1, _y1 = measured_font.getbbox(text_value)
+                    return measured_font, float(x1 - x0)
+
+                base_font, base_width = _measure_font(base_font_size)
+
+                if rect is not None and base_font is not None:
+                    min_scale = 0.7
+                    max_scale = 1.1
+                    min_allowed = base_font_size * min_scale
+                    max_allowed = base_font_size * max_scale
+                    if base_font_size >= 9.0:
+                        min_allowed = max(min_allowed, 9.0)
+                    if min_allowed > max_allowed:
+                        min_allowed = max_allowed
+
+                    adjusted = False
+                    if base_width > width:
+                        current_size = min(max(base_font_size, min_allowed), max_allowed)
+                        if current_size > base_font_size:
+                            current_size = base_font_size
+                        _, text_width = _measure_font(current_size)
+
+                        while text_width > width and current_size > min_allowed:
+                            new_size = max(current_size - 0.2, min_allowed)
+                            if math.isclose(
+                                new_size, current_size, rel_tol=1e-3, abs_tol=1e-3
+                            ):
+                                break
+                            current_size = new_size
+                            measured_font, text_width = _measure_font(current_size)
+                            if measured_font is None:
+                                break
+                        final_size = current_size
+                        adjusted = True
+                    else:
+                        final_size = base_font_size
+
+                    if adjusted:
+                        if final_size < min_allowed:
+                            final_size = min_allowed
+                        if final_size > max_allowed:
+                            final_size = max_allowed
+
+                set_font_size(txt, round(final_size, 2))
              
         except KeyError:
             pass
