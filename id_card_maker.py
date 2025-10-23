@@ -91,6 +91,8 @@ def clean_branch_name(value: str) -> str:
 
 FONT_SIZE_PATTERN = re.compile(r"font-size\s*:\s*([0-9.]+)px", re.IGNORECASE)
 FONT_FAMILY_PATTERN = re.compile(r"font-family\s*:\s*([^;]+)", re.IGNORECASE)
+_TRANSLATE_RE = re.compile(r"translate\s*\(\s*([^)]+)\)", re.IGNORECASE)
+_COORDINATE_SPLIT_RE = re.compile(r"[\s,]+")
 
 MIN_FONT_SIZE = 9.0
 MULTILINE_MIN_FONT_SIZE = 6.0
@@ -258,6 +260,86 @@ def _parse_length(value: str) -> Optional[float]:
         return None
 
 
+class _TransformState(NamedTuple):
+    dx: float
+    dy: float
+    remaining: Optional[str]
+    original: Optional[str]
+
+
+def _parse_translate_arguments(argument: str) -> Tuple[float, float]:
+    cleaned = argument.replace(",", " ").strip()
+    if not cleaned:
+        return 0.0, 0.0
+
+    tokens = [token for token in cleaned.split() if token]
+    dx = _parse_length(tokens[0]) if tokens else None
+    dy = _parse_length(tokens[1]) if len(tokens) > 1 else None
+
+    return (dx if dx is not None else 0.0), (dy if dy is not None else 0.0)
+
+
+def _capture_transform_state(element: Element) -> _TransformState:
+    if not element.hasAttribute("transform"):
+        return _TransformState(0.0, 0.0, None, None)
+
+    original = element.getAttribute("transform") or ""
+    dx_total = 0.0
+    dy_total = 0.0
+    segments = []
+    last_index = 0
+
+    for match in _TRANSLATE_RE.finditer(original):
+        segments.append(original[last_index : match.start()])
+        offset_dx, offset_dy = _parse_translate_arguments(match.group(1))
+        dx_total += offset_dx
+        dy_total += offset_dy
+        last_index = match.end()
+
+    segments.append(original[last_index:])
+
+    cleaned = " ".join(segment.strip() for segment in segments if segment.strip())
+    remaining = cleaned or None
+
+    return _TransformState(dx_total, dy_total, remaining, original)
+
+
+def _offset_coordinate_string(value: str, delta: float) -> Optional[str]:
+    tokens = [token for token in _COORDINATE_SPLIT_RE.split(value.strip()) if token]
+    if not tokens:
+        return None
+
+    updated_tokens = []
+    parsed_any = False
+    for token in tokens:
+        parsed = _parse_length(token)
+        if parsed is None:
+            updated_tokens.append(token)
+            continue
+        parsed_any = True
+        suffix = "px" if token.lower().endswith("px") else ""
+        updated_tokens.append(f"{_format_float(parsed + delta)}{suffix}")
+
+    if not parsed_any:
+        return None
+
+    return " ".join(updated_tokens)
+
+
+def _apply_coordinate_offset(element: Element, attribute: str, delta: float) -> None:
+    if math.isclose(delta, 0.0, abs_tol=1e-9):
+        return
+
+    if element.hasAttribute(attribute):
+        raw_value = element.getAttribute(attribute)
+        updated = _offset_coordinate_string(raw_value, delta)
+        if updated is not None:
+            element.setAttribute(attribute, updated)
+            return
+
+    element.setAttribute(attribute, _format_float(delta))
+
+
 def _extract_font_size(element: Element) -> Optional[float]:
     style = element.getAttribute("style") or ""
     match = FONT_SIZE_PATTERN.search(style)
@@ -398,6 +480,7 @@ def _fit_text_within_width(
     min_font_size: float = MIN_FONT_SIZE,
     alignment: str = "center",
 ) -> _WidthFitResult:
+    transform_state = _capture_transform_state(element)
     font_size = _extract_font_size(element)
     if font_size is None:
         font_size = 38.0
@@ -441,16 +524,29 @@ def _fit_text_within_width(
 
     _set_font_size(element, round(current_size, 2))
 
-    if baseline_y is not None:
-        element.setAttribute("y", _format_float(baseline_y))
+    adjusted_baseline = (
+        (baseline_y + transform_state.dy)
+        if baseline_y is not None
+        else None
+    )
 
-    if element.hasAttribute("transform"):
-        element.removeAttribute("transform")
+    if adjusted_baseline is not None:
+        element.setAttribute("y", _format_float(adjusted_baseline))
+    elif not math.isclose(transform_state.dy, 0.0, abs_tol=1e-9):
+        _apply_coordinate_offset(element, "y", transform_state.dy)
+
+    if not math.isclose(transform_state.dx, 0.0, abs_tol=1e-9):
+        _apply_coordinate_offset(element, "x", transform_state.dx)
 
     element.setAttribute("dominant-baseline", "alphabetic")
 
     if alignment:
         _apply_alignment(element, alignment)
+
+    if transform_state.remaining is not None:
+        element.setAttribute("transform", transform_state.remaining)
+    elif transform_state.original is not None and element.hasAttribute("transform"):
+        element.removeAttribute("transform")
 
     fits = True
     if max_width is not None and max_width > 0 and measured_width is not None:
@@ -458,10 +554,16 @@ def _fit_text_within_width(
 
     available_font_path = font_path if font_path.exists() else None
 
+    final_baseline: Optional[float]
+    if element.hasAttribute("y"):
+        final_baseline = _parse_length(element.getAttribute("y"))
+    else:
+        final_baseline = adjusted_baseline
+
     return _WidthFitResult(
         fits,
         max_width,
-        baseline_y,
+        final_baseline,
         current_size,
         measured_width,
         available_font_path,
@@ -528,9 +630,6 @@ def _apply_multiline_layout(
 
     if alignment:
         _apply_alignment(element, alignment)
-
-    if element.hasAttribute("transform"):
-        element.removeAttribute("transform")
 
     baseline_reference = fit_result.baseline_y
     if baseline_reference is None and element.hasAttribute("y"):
