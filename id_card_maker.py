@@ -407,61 +407,6 @@ def _resolve_font_path(element: Element) -> Path:
     return candidate
 
 
-class _RectBox(NamedTuple):
-    x: float
-    width: float
-
-    @property
-    def center(self) -> float:
-        return self.x + (self.width / 2.0)
-
-
-def _extract_rect_box(rect: Element) -> Optional[_RectBox]:
-    if rect.tagName.lower() != "rect":
-        return None
-    width = _parse_length(rect.getAttribute("width"))
-    if width is None or width <= 0:
-        return None
-    x_value = _parse_length(rect.getAttribute("x"))
-    if x_value is None:
-        x_value = 0.0
-    return _RectBox(x=x_value, width=width)
-
-
-def _find_nearest_rect_box(element: Element) -> Optional[_RectBox]:
-    """Attempt to infer the available width from a sibling rectangle."""
-
-    def _iter_siblings(start: Optional[Node], step: str) -> Iterator[Element]:
-        current = getattr(start, step)
-        while current is not None:
-            if current.nodeType == Node.ELEMENT_NODE:
-                yield current  # type: ignore[misc]
-            current = getattr(current, step)
-
-    for sibling in _iter_siblings(element, "previousSibling"):
-        box = _extract_rect_box(sibling)
-        if box is not None:
-            return box
-
-    for sibling in _iter_siblings(element, "nextSibling"):
-        box = _extract_rect_box(sibling)
-        if box is not None:
-            return box
-
-    parent = element.parentNode
-    while parent is not None and parent.nodeType != Node.ELEMENT_NODE:
-        parent = parent.parentNode
-
-    if isinstance(parent, Element):
-        for node in parent.childNodes:
-            if node.nodeType == Node.ELEMENT_NODE:
-                box = _extract_rect_box(node)  # type: ignore[arg-type]
-                if box is not None:
-                    return box
-
-    return None
-
-
 def _compute_max_text_width(element: Element, template_lines: Sequence[str]) -> Optional[float]:
     font_size = _extract_font_size(element)
     if font_size is None:
@@ -485,14 +430,7 @@ def _compute_max_text_width(element: Element, template_lines: Sequence[str]) -> 
             default=None,
         )
 
-    rect_box = _find_nearest_rect_box(element)
-    rect_width = rect_box.width if rect_box is not None else None
-
-    if template_width is not None and rect_width is not None:
-        return max(template_width, rect_width)
-    if template_width is not None:
-        return template_width
-    return rect_width
+    return template_width
 
 
 class _WidthFitResult(NamedTuple):
@@ -848,7 +786,6 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         max_width = _compute_max_text_width(text_element, template_lines)
         baseline_y = _parse_length(text_element.getAttribute("y") if text_element.hasAttribute("y") else "")
         template_font_size = _extract_font_size(text_element)
-        rect_box = _find_nearest_rect_box(text_element)
         if text_element.hasAttribute("x"):
             original_x = text_element.getAttribute("x")
             has_x = True
@@ -870,7 +807,6 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
                 "has_x": has_x,
                 "original_anchor": original_anchor,
                 "has_anchor": has_anchor,
-                "rect_box": rect_box,
             }
         )
 
@@ -888,23 +824,7 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         has_original_x = cache.get("has_x", False)
         original_anchor = cache.get("original_anchor")
         has_original_anchor = cache.get("has_anchor", False)
-        rect_box = cache.get("rect_box")
-
         fit_alignment = element_alignment or "center"
-        center_override = False
-        normalized_original_anchor = (
-            original_anchor.strip().lower()
-            if isinstance(original_anchor, str)
-            else ""
-        )
-        if (
-            rect_box is not None
-            and fit_alignment
-            and fit_alignment.strip().lower() == "center"
-            and normalized_original_anchor == "start"
-        ):
-            text_element.setAttribute("x", _format_float(rect_box.center))
-            center_override = True
         fit_result = _fit_text_within_width(
             text_element,
             text,
@@ -955,7 +875,6 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
             and has_original_x
             and original_x is not None
             and math.isclose(fit_result.transform_dx, 0.0, abs_tol=1e-9)
-            and not center_override
         ):
             text_element.setAttribute("x", original_x)
 
