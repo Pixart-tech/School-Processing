@@ -169,6 +169,42 @@ class MultilineFallbackTests(unittest.TestCase):
             "Adjusted text width should respect enclosing rectangle",
         )
 
+    def test_center_alignment_uses_enclosing_rect_center(self):
+        doc = Document()
+        svg = doc.createElement("svg")
+        doc.appendChild(svg)
+
+        group = doc.createElement("g")
+        group.setAttribute("inkscape:label", "M name")
+        svg.appendChild(group)
+
+        rect = doc.createElement("rect")
+        rect.setAttribute("x", "30")
+        rect.setAttribute("y", "0")
+        rect.setAttribute("width", "140")
+        rect.setAttribute("height", "40")
+        group.appendChild(rect)
+
+        text_element = doc.createElement("text")
+        text_element.setAttribute(
+            "style", "font-size:38px;font-family:PlaypenSans-Medium"
+        )
+        text_element.setAttribute("x", "30")
+        text_element.setAttribute("y", "20")
+        text_element.setAttribute("text-anchor", "start")
+        text_element.appendChild(doc.createTextNode("Centered"))
+        group.appendChild(text_element)
+
+        _update_text_group(group, "Centered")
+
+        expected_center = 30 + (140 / 2.0)
+        self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
+        self.assertAlmostEqual(
+            _parse_length(text_element.getAttribute("x")),
+            expected_center,
+            places=4,
+        )
+
 
 class TransformPreservationTests(unittest.TestCase):
     def _build_group(self):
