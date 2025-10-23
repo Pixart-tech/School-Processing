@@ -115,6 +115,17 @@ _ALIGNMENT_PREFIX_RE = re.compile(r"^\s*([LMR])(?:\b|[_\-\s:])", re.IGNORECASE)
 _ALIGNMENT_SUFFIX_RE = re.compile(r"(?:^|[_\-\s:])([LMR])\s*$", re.IGNORECASE)
 
 
+_TEXT_ANCHOR_ALIGNMENT_MAP = {
+    "start": "left",
+    "left": "left",
+    "middle": "center",
+    "centre": "center",
+    "center": "center",
+    "end": "right",
+    "right": "right",
+}
+
+
 def _interpret_alignment_token(value: str) -> Optional[str]:
     if not value:
         return None
@@ -168,6 +179,12 @@ def _resolve_layer_alignment(element: Element) -> Optional[str]:
         current = parent if isinstance(parent, Element) else None
 
     return None
+
+
+def _normalise_text_anchor(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return _TEXT_ANCHOR_ALIGNMENT_MAP.get(value.strip().lower())
 
 
 def _set_text(element: Element, text: str) -> None:
@@ -327,6 +344,17 @@ def _offset_coordinate_string(value: str, delta: float) -> Optional[str]:
     return " ".join(updated_tokens)
 
 
+def _parse_first_coordinate(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    tokens = [token for token in _COORDINATE_SPLIT_RE.split(value.strip()) if token]
+    for token in tokens:
+        parsed = _parse_length(token)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _apply_coordinate_offset(element: Element, attribute: str, delta: float) -> None:
     if math.isclose(delta, 0.0, abs_tol=1e-9):
         return
@@ -394,6 +422,25 @@ def _measure_text_width(font: ImageFont.FreeTypeFont, text: str) -> float:
         return 0.0
     left, _, right, _ = font.getbbox(text)
     return float(right - left)
+
+
+def _measure_text_block_width(
+    element: Element, lines: Sequence[str], font_size: float
+) -> Optional[float]:
+    cleaned_lines = [line for line in lines if line]
+    if not cleaned_lines:
+        return 0.0
+
+    font_path = _resolve_font_path(element)
+    if not font_path.exists():
+        return None
+
+    try:
+        font = ImageFont.truetype(str(font_path), max(1, int(round(font_size))))
+    except OSError:
+        return None
+
+    return max((_measure_text_width(font, line) for line in cleaned_lines), default=0.0)
 
 
 def _resolve_font_path(element: Element) -> Path:
@@ -812,6 +859,7 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
 
     for index, text_element in enumerate(text_elements):
         element_alignment = _resolve_layer_alignment(text_element) or base_alignment
+        current_lines: Sequence[str] = [text]
 
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
@@ -837,7 +885,9 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         if element_alignment:
             _apply_alignment(text_element, element_alignment)
 
+        final_measured_width = fit_result.measured_width
         multiline_applied = False
+        center_adjusted = False
         if (
             text.strip()
             and fit_result is not None
@@ -855,19 +905,64 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
             if fallback_result is not None:
                 multiline_applied = True
                 lines, _size, measured_width = fallback_result
+                current_lines = list(lines)
+                if measured_width is not None:
+                    final_measured_width = measured_width
                 if (
                     fit_result.max_width is not None
                     and fit_result.max_width > 0
-                    and measured_width is not None
-                    and measured_width > fit_result.max_width
+                    and final_measured_width is not None
+                    and final_measured_width > fit_result.max_width
                 ):
-                    _shrink_two_line_text(
+                    shrink_result = _shrink_two_line_text(
                         text_element,
                         lines,
                         fit_result,
                         alignment=fallback_alignment,
                         absolute_min_font_size=MULTILINE_MIN_FONT_SIZE,
                     )
+                    if shrink_result is not None:
+                        _applied_size, shrink_width = shrink_result
+                        if shrink_width is not None:
+                            final_measured_width = shrink_width
+
+        final_alignment = element_alignment or base_alignment or "center"
+
+        if final_measured_width is None:
+            final_font_size = _extract_font_size(text_element)
+            if final_font_size is not None:
+                width_candidate = _measure_text_block_width(
+                    text_element, current_lines, final_font_size
+                )
+                if width_candidate is not None:
+                    final_measured_width = width_candidate
+
+        if (
+            final_alignment == "center"
+            and final_measured_width is not None
+            and final_measured_width >= 0.0
+        ):
+            anchor_before = (
+                _normalise_text_anchor(original_anchor)
+                if has_original_anchor
+                else None
+            )
+            if anchor_before is None:
+                anchor_before = "left"
+            if anchor_before == "left":
+                reference_left: Optional[float] = None
+                if has_original_x and original_x is not None:
+                    original_left = _parse_first_coordinate(original_x)
+                    if original_left is not None:
+                        reference_left = original_left + fit_result.transform_dx
+                if reference_left is None and text_element.hasAttribute("x"):
+                    reference_left = _parse_first_coordinate(
+                        text_element.getAttribute("x")
+                    )
+                if reference_left is not None:
+                    center_value = reference_left + (final_measured_width / 2.0)
+                    text_element.setAttribute("x", _format_float(center_value))
+                    center_adjusted = True
 
         if (
             not multiline_applied
@@ -875,6 +970,7 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
             and has_original_x
             and original_x is not None
             and math.isclose(fit_result.transform_dx, 0.0, abs_tol=1e-9)
+            and not center_adjusted
         ):
             text_element.setAttribute("x", original_x)
 
