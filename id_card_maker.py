@@ -407,6 +407,49 @@ def _resolve_font_path(element: Element) -> Path:
     return candidate
 
 
+def _extract_rect_width(rect: Element) -> Optional[float]:
+    if rect.tagName.lower() != "rect":
+        return None
+    width = _parse_length(rect.getAttribute("width"))
+    if width is None or width <= 0:
+        return None
+    return width
+
+
+def _find_nearest_rect_width(element: Element) -> Optional[float]:
+    """Attempt to infer the available width from a sibling rectangle."""
+
+    def _iter_siblings(start: Optional[Node], step: str) -> Iterator[Element]:
+        current = getattr(start, step)
+        while current is not None:
+            if current.nodeType == Node.ELEMENT_NODE:
+                yield current  # type: ignore[misc]
+            current = getattr(current, step)
+
+    for sibling in _iter_siblings(element, "previousSibling"):
+        width = _extract_rect_width(sibling)
+        if width is not None:
+            return width
+
+    for sibling in _iter_siblings(element, "nextSibling"):
+        width = _extract_rect_width(sibling)
+        if width is not None:
+            return width
+
+    parent = element.parentNode
+    while parent is not None and parent.nodeType != Node.ELEMENT_NODE:
+        parent = parent.parentNode
+
+    if isinstance(parent, Element):
+        for node in parent.childNodes:
+            if node.nodeType == Node.ELEMENT_NODE:
+                width = _extract_rect_width(node)  # type: ignore[arg-type]
+                if width is not None:
+                    return width
+
+    return None
+
+
 def _compute_max_text_width(element: Element, template_lines: Sequence[str]) -> Optional[float]:
     font_size = _extract_font_size(element)
     if font_size is None:
@@ -417,15 +460,26 @@ def _compute_max_text_width(element: Element, template_lines: Sequence[str]) -> 
         return None
 
     try:
-        font = ImageFont.truetype(str(font_path), max(1, int(math.floor(font_size))))
+        font = ImageFont.truetype(str(font_path), max(1, int(round(font_size))))
     except OSError:
         return None
 
     cleaned_lines = [line.strip() for line in template_lines if line.strip()]
     if not cleaned_lines:
-        return None
+        template_width = None
+    else:
+        template_width = max(
+            (_measure_text_width(font, line) for line in cleaned_lines),
+            default=None,
+        )
 
-    return max((_measure_text_width(font, line) for line in cleaned_lines), default=None)
+    rect_width = _find_nearest_rect_width(element)
+
+    if template_width is not None and rect_width is not None:
+        return max(template_width, rect_width)
+    if template_width is not None:
+        return template_width
+    return rect_width
 
 
 class _WidthFitResult(NamedTuple):
@@ -447,8 +501,7 @@ def _split_text_into_two_lines(text: str) -> Sequence[str]:
 
     words = cleaned.split()
     if len(words) <= 1:
-        midpoint = max(1, len(cleaned) // 2)
-        return [cleaned[:midpoint].strip(), cleaned[midpoint:].strip()]
+        return [cleaned]
 
     best_index = 1
     best_diff = float("inf")
@@ -466,12 +519,14 @@ def _split_text_into_two_lines(text: str) -> Sequence[str]:
 
 
 def _apply_alignment(element: Element, alignment: str) -> None:
-    alignment = alignment.lower()
-    if alignment == "center":
+    """Apply SVG text alignment while accepting common synonyms."""
+
+    normalized = alignment.strip().lower()
+    if normalized in {"center", "centre", "middle"}:
         element.setAttribute("text-anchor", "middle")
-    elif alignment == "right":
+    elif normalized in {"right", "end"}:
         element.setAttribute("text-anchor", "end")
-    elif alignment == "left":
+    elif normalized in {"left", "start"}:
         element.setAttribute("text-anchor", "start")
 
 
@@ -498,16 +553,19 @@ def _fit_text_within_width(
     measured_width: Optional[float] = None
     font_for_measurement: Optional[ImageFont.FreeTypeFont] = None
 
+    initial_measured_width: Optional[float] = None
+
     if font_path.exists():
         try:
             font_for_measurement = ImageFont.truetype(
-                str(font_path), max(1, int(math.floor(current_size)))
+                str(font_path), max(1, int(round(current_size)))
             )
         except OSError:
             font_for_measurement = None
 
     if font_for_measurement is not None:
         measured_width = _measure_text_width(font_for_measurement, text)
+        initial_measured_width = measured_width
         while (
             max_width is not None
             and max_width > 0
@@ -521,7 +579,7 @@ def _fit_text_within_width(
             current_size = new_size
             try:
                 font_for_measurement = ImageFont.truetype(
-                    str(font_path), max(1, int(math.floor(current_size)))
+                    str(font_path), max(1, int(round(current_size)))
                 )
             except OSError:
                 font_for_measurement = None
@@ -555,9 +613,22 @@ def _fit_text_within_width(
     elif transform_state.original is not None and element.hasAttribute("transform"):
         element.removeAttribute("transform")
 
+    width_tolerance = 0.05
     fits = True
-    if max_width is not None and max_width > 0 and measured_width is not None:
-        fits = measured_width <= max_width
+    if (
+        max_width is not None
+        and max_width > 0
+        and initial_measured_width is not None
+        and initial_measured_width > max_width + width_tolerance
+    ):
+        fits = False
+    if (
+        max_width is not None
+        and max_width > 0
+        and measured_width is not None
+        and measured_width > max_width + width_tolerance
+    ):
+        fits = False
 
     available_font_path = font_path if font_path.exists() else None
 
@@ -606,7 +677,7 @@ def _apply_multiline_layout(
     if font_path and font_path.exists():
         try:
             font_for_metrics = ImageFont.truetype(
-                str(font_path), max(1, int(math.floor(effective_size)))
+                str(font_path), max(1, int(round(effective_size)))
             )
         except OSError:
             font_for_metrics = None
@@ -629,7 +700,7 @@ def _apply_multiline_layout(
             effective_size = new_size
             try:
                 font_for_metrics = ImageFont.truetype(
-                    str(font_path), max(1, int(math.floor(effective_size)))
+                    str(font_path), max(1, int(round(effective_size)))
                 )
             except OSError:
                 font_for_metrics = None
