@@ -839,8 +839,29 @@ def personalize_id_card(
     if date_of_birth:
         date_of_birth = _format_date(date_of_birth)
 
+    student_id = _normalise_string(record.get("student_id"))
+    admission_number = _normalise_string(record.get("admission_number"))
+    roll_number = _normalise_string(record.get("roll_number"))
+    register_number = _normalise_string(record.get("register_number"))
+    date_of_issued = _normalise_string(record.get("date_of_issued"))
+    if date_of_issued:
+        date_of_issued = _format_date(date_of_issued)
+
+    expiry_date = _normalise_string(record.get("expiry_date"))
+    if expiry_date:
+        expiry_date = _format_date(expiry_date)
+
     gender = _normalise_string(record.get("gender"))
     current_address = _normalise_string(record.get("current_address"))
+
+    department_value = record.get("department")
+    department = (
+        custom_title_case(_normalise_string(department_value))
+        if not _is_missing(department_value)
+        else ""
+    )
+    employee_id = _normalise_string(record.get("employee_id"))
+    email = _normalise_string(record.get("email"))
 
     guardian_1_type = _guardian_type(record.get("guardian_1_type"))
     guardian_2_type = _guardian_type(record.get("guardian_2_type"))
@@ -918,6 +939,24 @@ def personalize_id_card(
         "blood": (blood_group, 5, 0.5),
         "dob": (date_of_birth, 12, 0.5),
     }
+
+    additional_text_updates = {
+        "student_id": (student_id, 20, 0.5),
+        "admission_number": (admission_number, 20, 0.5),
+        "roll_number": (roll_number, 20, 0.5),
+        "register_number": (register_number, 20, 0.5),
+        "date_of_issued": (date_of_issued, 12, 0.5),
+        "expiry_date": (expiry_date, 12, 0.5),
+        "department": (department, 30, 0.3),
+        "employee_id": (employee_id, 20, 0.5),
+        "email": (email, 40, 0.5),
+    }
+
+    text_updates_front.update(additional_text_updates)
+    text_updates_back.update(additional_text_updates)
+
+    text_updates_front["blood_group"] = text_updates_front["blood"]
+    text_updates_back["blood_group"] = text_updates_back["blood"]
 
     address_updates_front = {
         "address": current_address,
