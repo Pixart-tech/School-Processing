@@ -169,7 +169,7 @@ class MultilineFallbackTests(unittest.TestCase):
             "Adjusted text width should respect enclosing rectangle",
         )
 
-    def test_center_alignment_uses_enclosing_rect_center(self):
+    def test_center_alignment_uses_measured_text_width_for_centering(self):
         doc = Document()
         svg = doc.createElement("svg")
         doc.appendChild(svg)
@@ -197,13 +197,21 @@ class MultilineFallbackTests(unittest.TestCase):
 
         _update_text_group(group, "Centered")
 
-        expected_center = 30 + (140 / 2.0)
         self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
-        self.assertAlmostEqual(
-            _parse_length(text_element.getAttribute("x")),
-            expected_center,
-            places=4,
+        final_x = _parse_length(text_element.getAttribute("x"))
+        self.assertIsNotNone(final_x)
+
+        font_size = _extract_font_size(text_element)
+        self.assertIsNotNone(font_size)
+        font_path = _resolve_font_path(text_element)
+        self.assertTrue(font_path.exists())
+        font = ImageFont.truetype(
+            str(font_path), max(1, int(math.floor(font_size)))
         )
+        measured_width = _measure_text_width(font, "Centered")
+        expected_center = 30.0 + (measured_width / 2.0)
+
+        self.assertAlmostEqual(final_x, expected_center, places=4)
 
 
 class TransformPreservationTests(unittest.TestCase):
