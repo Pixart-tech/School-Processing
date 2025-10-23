@@ -17,6 +17,7 @@ from id_card_maker import (
     MULTILINE_MIN_FONT_SIZE,
     _extract_font_size,
     _measure_text_width,
+    _parse_length,
     _resolve_font_path,
     _update_text_group,
 )
@@ -55,6 +56,7 @@ class MultilineFallbackTests(unittest.TestCase):
         text_element.setAttribute(
             "style", "font-size:38px;font-family:PlaypenSans-Medium"
         )
+        text_element.appendChild(doc.createTextNode("AB"))
         group.appendChild(text_element)
 
         long_text = "Alexandria Maximillian Robertson"
@@ -89,6 +91,71 @@ class MultilineFallbackTests(unittest.TestCase):
         )
 
         self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
+
+
+class TransformPreservationTests(unittest.TestCase):
+    def _build_group(self):
+        doc = Document()
+        svg = doc.createElement("svg")
+        doc.appendChild(svg)
+
+        group = doc.createElement("g")
+        group.setAttribute("id", "name")
+        svg.appendChild(group)
+
+        rect = doc.createElement("rect")
+        rect.setAttribute("x", "0")
+        rect.setAttribute("y", "0")
+        rect.setAttribute("width", "70")
+        rect.setAttribute("height", "40")
+        group.appendChild(rect)
+
+        text_element = doc.createElement("text")
+        text_element.setAttribute(
+            "style", "font-size:38px;font-family:PlaypenSans-Medium"
+        )
+        text_element.appendChild(doc.createTextNode("AB"))
+        group.appendChild(text_element)
+
+        return group, text_element
+
+    def test_translate_offsets_preserve_coordinates_and_other_transforms(self):
+        group, text_element = self._build_group()
+        text_element.setAttribute("x", "12")
+        text_element.setAttribute("y", "30")
+        text_element.setAttribute("transform", "translate(5,-7) rotate(30)")
+
+        _update_text_group(group, "Noah")
+
+        self.assertAlmostEqual(
+            _parse_length(text_element.getAttribute("x")),
+            17.0,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            _parse_length(text_element.getAttribute("y")),
+            23.0,
+            places=4,
+        )
+        self.assertEqual(text_element.getAttribute("transform"), "rotate(30)")
+
+    def test_pure_translate_transform_converted_to_coordinates(self):
+        group, text_element = self._build_group()
+        text_element.setAttribute("transform", "translate(8, 12)")
+
+        _update_text_group(group, "Lia")
+
+        self.assertAlmostEqual(
+            _parse_length(text_element.getAttribute("x")),
+            8.0,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            _parse_length(text_element.getAttribute("y")),
+            12.0,
+            places=4,
+        )
+        self.assertFalse(text_element.hasAttribute("transform"))
 
 
 if __name__ == "__main__":
