@@ -96,7 +96,7 @@ _COORDINATE_SPLIT_RE = re.compile(r"[\s,]+")
 
 MIN_FONT_SIZE = 4.6
 MULTILINE_MIN_FONT_SIZE = 4.6
-BASELINE_SPACING_SCALE = 0.92
+BASELINE_SPACING_SCALE = 0.6
 
 
 CENTER_ALIGNED_GROUPS = {"name", "fname", "mname", "fcontact", "mcontact"}
