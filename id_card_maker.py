@@ -6,7 +6,7 @@ import math
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple, NamedTuple
 from PIL import ImageFont
 from xml.dom.minidom import Document, Element, Node, parse
 
@@ -173,7 +173,9 @@ def _set_text(element: Element, text: str) -> None:
     element.appendChild(element.ownerDocument.createTextNode(text))
 
 
-def _set_multiline_text(element: Element, lines: Sequence[str]) -> None:
+def _set_multiline_text(
+    element: Element, lines: Sequence[str], *, line_height: Optional[float] = None
+) -> None:
     document = element.ownerDocument
     base_x = element.getAttribute("x") if element.hasAttribute("x") else ""
 
@@ -189,13 +191,39 @@ def _set_multiline_text(element: Element, lines: Sequence[str]) -> None:
         tspan = document.createElement("tspan")
         if base_x:
             tspan.setAttribute("x", base_x)
-        tspan.setAttribute("dy", "1em")
+        if line_height is not None:
+            tspan.setAttribute("dy", f"{_format_float(line_height)}px")
+        else:
+            tspan.setAttribute("dy", "1em")
         tspan.appendChild(document.createTextNode(line))
         element.appendChild(tspan)
 
 
 def _format_float(value: float) -> str:
     return ("{:.4f}".format(value)).rstrip("0").rstrip(".")
+
+
+def _extract_template_lines(element: Element) -> Sequence[str]:
+    lines = []
+    current = []
+
+    for node in element.childNodes:
+        if node.nodeType == Node.TEXT_NODE:
+            current.append(node.data or "")
+        elif node.nodeType == Node.ELEMENT_NODE:
+            if current:
+                combined = "".join(current).strip()
+                if combined:
+                    lines.append(combined)
+                current = []
+            lines.extend(_extract_template_lines(node))
+
+    if current:
+        combined = "".join(current).strip()
+        if combined:
+            lines.append(combined)
+
+    return lines
 
 
 def _set_font_size(element: Element, font_size: float) -> None:
@@ -296,6 +324,36 @@ def _resolve_font_path(element: Element) -> Path:
     return candidate
 
 
+def _compute_max_text_width(element: Element, template_lines: Sequence[str]) -> Optional[float]:
+    font_size = _extract_font_size(element)
+    if font_size is None:
+        return None
+
+    font_path = _resolve_font_path(element)
+    if not font_path.exists():
+        return None
+
+    try:
+        font = ImageFont.truetype(str(font_path), max(1, int(math.floor(font_size))))
+    except OSError:
+        return None
+
+    cleaned_lines = [line.strip() for line in template_lines if line.strip()]
+    if not cleaned_lines:
+        return None
+
+    return max((_measure_text_width(font, line) for line in cleaned_lines), default=None)
+
+
+class _WidthFitResult(NamedTuple):
+    fits: bool
+    max_width: Optional[float]
+    baseline_y: Optional[float]
+    font_size: float
+    measured_width: Optional[float]
+    font_path: Optional[Path]
+
+
 def _split_text_into_two_lines(text: str) -> Sequence[str]:
     cleaned = text.strip()
     if not cleaned:
@@ -331,234 +389,178 @@ def _apply_alignment(element: Element, alignment: str) -> None:
         element.setAttribute("text-anchor", "start")
 
 
-def _fit_text_within_rect(
-    group: Element,
+def _fit_text_within_width(
     element: Element,
     text: str,
-    index: int,
     *,
+    max_width: Optional[float],
+    baseline_y: Optional[float],
     min_font_size: float = MIN_FONT_SIZE,
     alignment: str = "center",
-):
-    rects = list(group.getElementsByTagName("rect"))
-    if not rects:
-        return True, None, None, None, None, None, None, None
-
-    rect = rects[index] if index < len(rects) else rects[0]
-
-    def _safe_float(attr: str) -> Optional[float]:
-        try:
-            return float(attr)
-        except (TypeError, ValueError):
-            return None
-
-    rect_width = _safe_float(rect.getAttribute("width") if rect.hasAttribute("width") else "")
-    rect_height = _safe_float(rect.getAttribute("height") if rect.hasAttribute("height") else "")
-    raw_rect_x = _safe_float(rect.getAttribute("x") if rect.hasAttribute("x") else "")
-    raw_rect_y = _safe_float(rect.getAttribute("y") if rect.hasAttribute("y") else "")
-    rect_x_for_center = raw_rect_x if raw_rect_x is not None else 0.0
-    rect_y_for_center = raw_rect_y if raw_rect_y is not None else 0.0
-
-    if rect_width is None or rect_width <= 0:
-        return True, rect, None, rect_width, rect_height, None, None, None
-
-    center_x = rect_x_for_center + rect_width / 2
-    center_y = rect_y_for_center + (rect_height / 2 if rect_height else 0.0)
-
-    alignment = alignment.lower()
-    if alignment == "left":
-        x_target = raw_rect_x
-        if x_target is None:
-            existing_x = _parse_length(element.getAttribute("x") if element.hasAttribute("x") else "")
-            x_target = existing_x if existing_x is not None else center_x
-        element.setAttribute("text-anchor", "start")
-        element.setAttribute("x", _format_float(x_target))
-    elif alignment == "right":
-        if raw_rect_x is not None and rect_width is not None:
-            x_target = raw_rect_x + rect_width
-        else:
-            existing_x = _parse_length(element.getAttribute("x") if element.hasAttribute("x") else "")
-            x_target = existing_x if existing_x is not None else center_x
-        element.setAttribute("text-anchor", "end")
-        element.setAttribute("x", _format_float(x_target))
-    else:
-        element.setAttribute("text-anchor", "middle")
-        element.setAttribute("x", _format_float(center_x))
-
-    element.setAttribute("dominant-baseline", "middle")
-    element.setAttribute("y", _format_float(center_y))
-    if element.hasAttribute("transform"):
-        element.removeAttribute("transform")
-
+) -> _WidthFitResult:
     font_size = _extract_font_size(element)
     if font_size is None:
         font_size = 38.0
 
-    font_path = _resolve_font_path(element)
-    if not font_path.exists():
-        return False, rect, font_size, rect_width, rect_height, center_x, center_y, font_path
-
     current_size = max(float(font_size), min_font_size)
 
-    try:
-        font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
-    except OSError:
-        return False, rect, current_size, rect_width, rect_height, center_x, center_y, font_path
+    font_path = _resolve_font_path(element)
+    measured_width: Optional[float] = None
+    font_for_measurement: Optional[ImageFont.FreeTypeFont] = None
 
-    text_width = _measure_text_width(font, text)
-
-    while text_width > rect_width and current_size > min_font_size:
-        new_size = max(current_size - 0.2, min_font_size)
-        if math.isclose(new_size, current_size, rel_tol=1e-3, abs_tol=1e-3):
-            break
-        current_size = new_size
+    if font_path.exists():
         try:
-            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(current_size))))
+            font_for_measurement = ImageFont.truetype(
+                str(font_path), max(1, int(math.floor(current_size)))
+            )
         except OSError:
-            break
-        text_width = _measure_text_width(font, text)
+            font_for_measurement = None
+
+    if font_for_measurement is not None:
+        measured_width = _measure_text_width(font_for_measurement, text)
+        while (
+            max_width is not None
+            and max_width > 0
+            and measured_width is not None
+            and measured_width > max_width
+            and current_size > min_font_size
+        ):
+            new_size = max(current_size - 0.2, min_font_size)
+            if math.isclose(new_size, current_size, rel_tol=1e-3, abs_tol=1e-3):
+                break
+            current_size = new_size
+            try:
+                font_for_measurement = ImageFont.truetype(
+                    str(font_path), max(1, int(math.floor(current_size)))
+                )
+            except OSError:
+                font_for_measurement = None
+                measured_width = None
+                break
+            measured_width = _measure_text_width(font_for_measurement, text)
 
     _set_font_size(element, round(current_size, 2))
-    element.setAttribute("y", _format_float(center_y))
 
-    return (
-        text_width <= rect_width,
-        rect,
+    if baseline_y is not None:
+        element.setAttribute("y", _format_float(baseline_y))
+
+    if element.hasAttribute("transform"):
+        element.removeAttribute("transform")
+
+    element.setAttribute("dominant-baseline", "alphabetic")
+
+    if alignment:
+        _apply_alignment(element, alignment)
+
+    fits = True
+    if max_width is not None and max_width > 0 and measured_width is not None:
+        fits = measured_width <= max_width
+
+    available_font_path = font_path if font_path.exists() else None
+
+    return _WidthFitResult(
+        fits,
+        max_width,
+        baseline_y,
         current_size,
-        rect_width,
-        rect_height,
-        center_x,
-        center_y,
-        font_path,
+        measured_width,
+        available_font_path,
     )
 
 
 def _apply_multiline_layout(
     element: Element,
     lines: Sequence[str],
-    fit_result,
+    fit_result: _WidthFitResult,
     *,
     alignment: str = "center",
     min_font_size: float = MIN_FONT_SIZE,
     initial_size: Optional[float] = None,
 ) -> Tuple[float, Optional[float]]:
-    (
-        _,
-        rect,
-        current_size,
-        rect_width,
-        _rect_height,
-        center_x,
-        center_y,
-        font_path,
-    ) = fit_result
-
-    if rect is None or rect_width is None or rect_width <= 0:
-        return min_font_size, None
-
-    rect_x = _parse_length(rect.getAttribute("x") if rect.hasAttribute("x") else "")
-
     if initial_size is not None:
         effective_size = max(initial_size, min_font_size)
-    elif current_size is not None:
-        effective_size = max(current_size, min_font_size)
     else:
-        extracted_size = _extract_font_size(element)
-        if extracted_size is not None:
-            effective_size = max(extracted_size, min_font_size)
-        else:
-            effective_size = max(38.0, min_font_size)
+        effective_size = max(fit_result.font_size, min_font_size)
 
-    font_path = font_path or _resolve_font_path(element)
+    font_path = fit_result.font_path or _resolve_font_path(element)
     measured_width: Optional[float] = None
     font_for_metrics: Optional[ImageFont.FreeTypeFont] = None
 
     if font_path and font_path.exists():
         try:
-            font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
+            font_for_metrics = ImageFont.truetype(
+                str(font_path), max(1, int(math.floor(effective_size)))
+            )
         except OSError:
-            font = None
+            font_for_metrics = None
 
-        if font is not None:
-            font_for_metrics = font
-            measured_width = max((_measure_text_width(font, line) for line in lines), default=0.0)
-            while (
-                rect_width is not None
-                and measured_width is not None
-                and measured_width > rect_width
-                and effective_size > min_font_size
-            ):
-                new_size = max(effective_size - 0.2, min_font_size)
-                if math.isclose(new_size, effective_size, rel_tol=1e-3, abs_tol=1e-3):
-                    break
-                effective_size = new_size
-                try:
-                    font = ImageFont.truetype(str(font_path), max(1, int(math.floor(effective_size))))
-                except OSError:
-                    font = None
-                    break
-                if font is None:
-                    break
-                font_for_metrics = font
-                measured_width = max((_measure_text_width(font, line) for line in lines), default=0.0)
+    if font_for_metrics is not None:
+        measured_width = max(
+            (_measure_text_width(font_for_metrics, line) for line in lines),
+            default=0.0,
+        )
+        while (
+            fit_result.max_width is not None
+            and fit_result.max_width > 0
+            and measured_width is not None
+            and measured_width > fit_result.max_width
+            and effective_size > min_font_size
+        ):
+            new_size = max(effective_size - 0.2, min_font_size)
+            if math.isclose(new_size, effective_size, rel_tol=1e-3, abs_tol=1e-3):
+                break
+            effective_size = new_size
+            try:
+                font_for_metrics = ImageFont.truetype(
+                    str(font_path), max(1, int(math.floor(effective_size)))
+                )
+            except OSError:
+                font_for_metrics = None
+                measured_width = None
+                break
+            measured_width = max(
+                (_measure_text_width(font_for_metrics, line) for line in lines),
+                default=0.0,
+            )
 
     effective_size = max(effective_size, min_font_size)
     _set_font_size(element, round(effective_size, 2))
 
-    existing_x = _parse_length(element.getAttribute("x") if element.hasAttribute("x") else "")
-
-    alignment = alignment.lower()
-    if alignment == "left":
-        if rect_x is not None:
-            x_target = rect_x
-        elif existing_x is not None:
-            x_target = existing_x
-        else:
-            x_target = center_x
-        element.setAttribute("text-anchor", "start")
-    elif alignment == "right":
-        if rect_x is not None and rect_width is not None:
-            x_target = rect_x + rect_width
-        elif existing_x is not None:
-            x_target = existing_x
-        else:
-            x_target = center_x
-        element.setAttribute("text-anchor", "end")
-    else:
-        x_target = center_x
-        element.setAttribute("text-anchor", "middle")
-
-    if x_target is not None:
-        element.setAttribute("x", _format_float(x_target))
+    if alignment:
+        _apply_alignment(element, alignment)
 
     if element.hasAttribute("transform"):
         element.removeAttribute("transform")
 
-    computed_y: Optional[float] = None
-    if center_y is not None:
-        computed_y = center_y - effective_size / 2
-        if font_for_metrics is not None:
-            try:
-                ascent, descent = font_for_metrics.getmetrics()
-            except (AttributeError, OSError):
-                ascent = descent = None
-            if ascent is not None and descent is not None:
-                line_height = float(getattr(font_for_metrics, "size", effective_size))
-                total_height = float(ascent + descent)
-                if len(lines) > 1:
-                    total_height += (len(lines) - 1) * line_height
-                computed_y = center_y - total_height / 2 + float(ascent)
-    elif element.hasAttribute("y"):
-        existing_y = _parse_length(element.getAttribute("y"))
-        if existing_y is not None:
-            computed_y = existing_y
+    baseline_reference = fit_result.baseline_y
+    if baseline_reference is None and element.hasAttribute("y"):
+        baseline_reference = _parse_length(element.getAttribute("y"))
+    if baseline_reference is None:
+        baseline_reference = 0.0
 
-    if computed_y is not None:
-        element.setAttribute("y", _format_float(computed_y))
+    baseline_spacing: float
+    if font_for_metrics is not None:
+        try:
+            ascent, descent = font_for_metrics.getmetrics()
+        except (AttributeError, OSError):
+            ascent = descent = None
+        if ascent is not None and descent is not None:
+            baseline_spacing = float(ascent + descent)
+        else:
+            baseline_spacing = float(getattr(font_for_metrics, "size", effective_size))
+    else:
+        baseline_spacing = effective_size
 
+    if baseline_spacing <= 0:
+        baseline_spacing = effective_size if effective_size > 0 else 1.0
+
+    line_count = max(len(lines), 1)
+    first_baseline = baseline_reference - ((line_count - 1) / 2.0) * baseline_spacing
+
+    element.setAttribute("y", _format_float(first_baseline))
     element.setAttribute("dominant-baseline", "alphabetic")
 
-    _set_multiline_text(element, lines)
+    _set_multiline_text(element, lines, line_height=baseline_spacing)
 
     return effective_size, measured_width
 
@@ -566,7 +568,7 @@ def _apply_multiline_layout(
 def _apply_two_line_layout(
     element: Element,
     text: str,
-    fit_result,
+    fit_result: _WidthFitResult,
     *,
     alignment: str = "center",
     min_font_size: float = MIN_FONT_SIZE,
@@ -589,18 +591,18 @@ def _apply_two_line_layout(
 def _shrink_two_line_text(
     element: Element,
     lines: Sequence[str],
-    fit_result,
+    fit_result: _WidthFitResult,
     *,
     alignment: str,
     absolute_min_font_size: float,
 ) -> Optional[Tuple[float, Optional[float]]]:
-    rect_width = fit_result[3] if len(fit_result) > 3 else None
-    if rect_width is None or rect_width <= 0:
+    max_width = fit_result.max_width
+    if max_width is None or max_width <= 0:
         return None
 
     current_size = _extract_font_size(element)
     if current_size is None:
-        current_size = fit_result[2] if len(fit_result) > 2 else None
+        current_size = fit_result.font_size
     if current_size is None:
         current_size = absolute_min_font_size
 
@@ -616,7 +618,7 @@ def _shrink_two_line_text(
             min_font_size=absolute_min_font_size,
             initial_size=applied_size,
         )
-        if measured_width is None or measured_width <= rect_width:
+        if measured_width is None or measured_width <= max_width:
             break
         if applied_size <= absolute_min_font_size or math.isclose(
             applied_size, absolute_min_font_size, abs_tol=1e-3
@@ -638,23 +640,29 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         elif group_id in CENTER_ALIGNED_GROUPS:
             base_alignment = "center"
 
+    cached_dimensions = []
+    for text_element in text_elements:
+        template_lines = _extract_template_lines(text_element)
+        max_width = _compute_max_text_width(text_element, template_lines)
+        baseline_y = _parse_length(text_element.getAttribute("y") if text_element.hasAttribute("y") else "")
+        cached_dimensions.append((max_width, baseline_y))
+
     for index, text_element in enumerate(text_elements):
         element_alignment = _resolve_layer_alignment(text_element) or base_alignment
 
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
 
-        needs_fit = len(text) >= 12 or bool(group.getElementsByTagName("rect"))
-        fit_result = None
-        if needs_fit:
-            fit_alignment = element_alignment or "center"
-            fit_result = _fit_text_within_rect(
-                group,
-                text_element,
-                text,
-                index,
-                alignment=fit_alignment,
-            )
+        max_width, baseline_y = cached_dimensions[index] if index < len(cached_dimensions) else (None, None)
+
+        fit_alignment = element_alignment or "center"
+        fit_result = _fit_text_within_width(
+            text_element,
+            text,
+            max_width=max_width,
+            baseline_y=baseline_y,
+            alignment=fit_alignment,
+        )
 
         if element_alignment:
             _apply_alignment(text_element, element_alignment)
@@ -662,7 +670,8 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         if (
             text.strip()
             and fit_result is not None
-            and not fit_result[0]
+            and not fit_result.fits
+            and fit_result.max_width is not None
         ):
             fallback_alignment = element_alignment or "center"
             fallback_result = _apply_two_line_layout(
@@ -674,12 +683,11 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
 
             if fallback_result is not None:
                 lines, _size, measured_width = fallback_result
-                rect_width = fit_result[3] if len(fit_result) > 3 else None
                 if (
-                    rect_width is not None
-                    and rect_width > 0
+                    fit_result.max_width is not None
+                    and fit_result.max_width > 0
                     and measured_width is not None
-                    and measured_width > rect_width
+                    and measured_width > fit_result.max_width
                 ):
                     _shrink_two_line_text(
                         text_element,
