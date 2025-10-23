@@ -1,6 +1,7 @@
 import math
 import types
 import unittest
+from pathlib import Path
 from xml.dom.minidom import Document
 
 from PIL import ImageFont
@@ -9,6 +10,10 @@ doc_maker_stub = types.ModuleType("doc_maker")
 doc_maker_stub.callInkscape = lambda *args, **kwargs: None
 
 import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 sys.modules.setdefault("doc_maker", doc_maker_stub)
 
@@ -56,6 +61,9 @@ class MultilineFallbackTests(unittest.TestCase):
         text_element.setAttribute(
             "style", "font-size:38px;font-family:PlaypenSans-Medium"
         )
+        text_element.setAttribute("x", "35")
+        text_element.setAttribute("y", "20")
+        text_element.setAttribute("text-anchor", "middle")
         text_element.appendChild(doc.createTextNode("AB"))
         group.appendChild(text_element)
 
@@ -91,6 +99,19 @@ class MultilineFallbackTests(unittest.TestCase):
         )
 
         self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
+
+        original_y = 20.0
+        first_baseline = _parse_length(text_element.getAttribute("y"))
+        self.assertIsNotNone(first_baseline)
+        baselines = [first_baseline]
+        for tspan in text_element.getElementsByTagName("tspan"):
+            dy = _parse_length(tspan.getAttribute("dy"))
+            self.assertIsNotNone(dy)
+            baselines.append(baselines[-1] + dy)
+
+        self.assertGreaterEqual(len(baselines), 2, "Expected multiline layout baselines")
+        centered_baseline = (baselines[0] + baselines[-1]) / 2.0
+        self.assertAlmostEqual(centered_baseline, original_y, places=2)
 
 
 class TransformPreservationTests(unittest.TestCase):
@@ -156,6 +177,23 @@ class TransformPreservationTests(unittest.TestCase):
             places=4,
         )
         self.assertFalse(text_element.hasAttribute("transform"))
+
+    def test_single_line_restores_alignment_and_size(self):
+        group, text_element = self._build_group()
+        text_element.setAttribute("x", "35")
+        text_element.setAttribute("y", "20")
+        text_element.setAttribute("text-anchor", "middle")
+        original_font_size = _extract_font_size(text_element)
+        text_element.firstChild.data = "Template Name"
+
+        _update_text_group(group, "Lia")
+
+        self.assertEqual(text_element.getAttribute("x"), "35")
+        self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
+        self.assertEqual(text_element.getAttribute("y"), "20")
+        self.assertAlmostEqual(_extract_font_size(text_element), original_font_size)
+        self.assertEqual(text_element.getAttribute("dominant-baseline"), "alphabetic")
+        self.assertEqual(len(text_element.getElementsByTagName("tspan")), 0)
 
 
 if __name__ == "__main__":

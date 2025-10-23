@@ -96,6 +96,7 @@ _COORDINATE_SPLIT_RE = re.compile(r"[\s,]+")
 
 MIN_FONT_SIZE = 9.0
 MULTILINE_MIN_FONT_SIZE = 6.0
+BASELINE_SPACING_SCALE = 0.92
 
 
 CENTER_ALIGNED_GROUPS = {"name", "fname", "mname", "fcontact", "mcontact"}
@@ -434,6 +435,9 @@ class _WidthFitResult(NamedTuple):
     font_size: float
     measured_width: Optional[float]
     font_path: Optional[Path]
+    template_font_size: Optional[float]
+    transform_dx: float
+    transform_dy: float
 
 
 def _split_text_into_two_lines(text: str) -> Sequence[str]:
@@ -479,9 +483,12 @@ def _fit_text_within_width(
     baseline_y: Optional[float],
     min_font_size: float = MIN_FONT_SIZE,
     alignment: str = "center",
+    template_font_size: Optional[float] = None,
 ) -> _WidthFitResult:
     transform_state = _capture_transform_state(element)
     font_size = _extract_font_size(element)
+    if font_size is None:
+        font_size = template_font_size
     if font_size is None:
         font_size = 38.0
 
@@ -567,6 +574,9 @@ def _fit_text_within_width(
         current_size,
         measured_width,
         available_font_path,
+        template_font_size,
+        transform_state.dx,
+        transform_state.dy,
     )
 
 
@@ -582,7 +592,12 @@ def _apply_multiline_layout(
     if initial_size is not None:
         effective_size = max(initial_size, min_font_size)
     else:
-        effective_size = max(fit_result.font_size, min_font_size)
+        base_size = (
+            fit_result.template_font_size
+            if fit_result.template_font_size is not None
+            else fit_result.font_size
+        )
+        effective_size = max(base_size, min_font_size)
 
     font_path = fit_result.font_path or _resolve_font_path(element)
     measured_width: Optional[float] = None
@@ -638,23 +653,27 @@ def _apply_multiline_layout(
         baseline_reference = 0.0
 
     baseline_spacing: float
+    baseline_candidate: Optional[float] = None
     if font_for_metrics is not None:
         try:
             ascent, descent = font_for_metrics.getmetrics()
         except (AttributeError, OSError):
             ascent = descent = None
         if ascent is not None and descent is not None:
-            baseline_spacing = float(ascent + descent)
-        else:
-            baseline_spacing = float(getattr(font_for_metrics, "size", effective_size))
-    else:
-        baseline_spacing = effective_size
+            baseline_candidate = float(ascent + descent)
+        elif hasattr(font_for_metrics, "size"):
+            baseline_candidate = float(getattr(font_for_metrics, "size"))
 
+    if baseline_candidate is None or baseline_candidate <= 0:
+        baseline_candidate = effective_size
+
+    baseline_spacing = baseline_candidate * BASELINE_SPACING_SCALE
     if baseline_spacing <= 0:
-        baseline_spacing = effective_size if effective_size > 0 else 1.0
+        baseline_spacing = max(effective_size * BASELINE_SPACING_SCALE, 1.0)
 
     line_count = max(len(lines), 1)
-    first_baseline = baseline_reference - ((line_count - 1) / 2.0) * baseline_spacing
+    total_span = baseline_spacing * max(line_count - 1, 0)
+    first_baseline = baseline_reference - (total_span / 2.0)
 
     element.setAttribute("y", _format_float(first_baseline))
     element.setAttribute("dominant-baseline", "alphabetic")
@@ -744,7 +763,30 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         template_lines = _extract_template_lines(text_element)
         max_width = _compute_max_text_width(text_element, template_lines)
         baseline_y = _parse_length(text_element.getAttribute("y") if text_element.hasAttribute("y") else "")
-        cached_dimensions.append((max_width, baseline_y))
+        template_font_size = _extract_font_size(text_element)
+        if text_element.hasAttribute("x"):
+            original_x = text_element.getAttribute("x")
+            has_x = True
+        else:
+            original_x = None
+            has_x = False
+        if text_element.hasAttribute("text-anchor"):
+            original_anchor = text_element.getAttribute("text-anchor")
+            has_anchor = True
+        else:
+            original_anchor = None
+            has_anchor = False
+        cached_dimensions.append(
+            {
+                "max_width": max_width,
+                "baseline_y": baseline_y,
+                "template_font_size": template_font_size,
+                "original_x": original_x,
+                "has_x": has_x,
+                "original_anchor": original_anchor,
+                "has_anchor": has_anchor,
+            }
+        )
 
     for index, text_element in enumerate(text_elements):
         element_alignment = _resolve_layer_alignment(text_element) or base_alignment
@@ -752,7 +794,14 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
 
-        max_width, baseline_y = cached_dimensions[index] if index < len(cached_dimensions) else (None, None)
+        cache = cached_dimensions[index] if index < len(cached_dimensions) else {}
+        max_width = cache.get("max_width")
+        baseline_y = cache.get("baseline_y")
+        template_font_size = cache.get("template_font_size")
+        original_x = cache.get("original_x")
+        has_original_x = cache.get("has_x", False)
+        original_anchor = cache.get("original_anchor")
+        has_original_anchor = cache.get("has_anchor", False)
 
         fit_alignment = element_alignment or "center"
         fit_result = _fit_text_within_width(
@@ -761,11 +810,13 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
             max_width=max_width,
             baseline_y=baseline_y,
             alignment=fit_alignment,
+            template_font_size=template_font_size,
         )
 
         if element_alignment:
             _apply_alignment(text_element, element_alignment)
 
+        multiline_applied = False
         if (
             text.strip()
             and fit_result is not None
@@ -781,6 +832,7 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
             )
 
             if fallback_result is not None:
+                multiline_applied = True
                 lines, _size, measured_width = fallback_result
                 if (
                     fit_result.max_width is not None
@@ -795,6 +847,21 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
                         alignment=fallback_alignment,
                         absolute_min_font_size=MULTILINE_MIN_FONT_SIZE,
                     )
+
+        if (
+            not multiline_applied
+            and fit_result.fits
+            and has_original_x
+            and original_x is not None
+            and math.isclose(fit_result.transform_dx, 0.0, abs_tol=1e-9)
+        ):
+            text_element.setAttribute("x", original_x)
+
+        if not multiline_applied and has_original_anchor:
+            if original_anchor:
+                text_element.setAttribute("text-anchor", original_anchor)
+            elif text_element.hasAttribute("text-anchor"):
+                text_element.removeAttribute("text-anchor")
 
 
 def _update_address_group(group: Element, text: str) -> None:
