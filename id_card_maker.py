@@ -94,8 +94,8 @@ FONT_FAMILY_PATTERN = re.compile(r"font-family\s*:\s*([^;]+)", re.IGNORECASE)
 _TRANSLATE_RE = re.compile(r"translate\s*\(\s*([^)]+)\)", re.IGNORECASE)
 _COORDINATE_SPLIT_RE = re.compile(r"[\s,]+")
 
-MIN_FONT_SIZE = 9.0
-MULTILINE_MIN_FONT_SIZE = 6.0
+MIN_FONT_SIZE = 4.6
+MULTILINE_MIN_FONT_SIZE = 4.6
 BASELINE_SPACING_SCALE = 0.92
 
 
