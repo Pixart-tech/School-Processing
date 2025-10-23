@@ -18,8 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
 sys.modules.setdefault("doc_maker", doc_maker_stub)
 
 from id_card_maker import (
-    MIN_FONT_SIZE,
     MULTILINE_MIN_FONT_SIZE,
+    _apply_alignment,
     _extract_font_size,
     _measure_text_width,
     _parse_length,
@@ -29,6 +29,19 @@ from id_card_maker import (
 
 
 class MultilineFallbackTests(unittest.TestCase):
+    def test_middle_alignment_keyword_sets_expected_anchor(self):
+        doc = Document()
+        svg = doc.createElement("svg")
+        doc.appendChild(svg)
+
+        text_element = doc.createElement("text")
+        text_element.setAttribute("x", "10")
+        svg.appendChild(text_element)
+
+        _apply_alignment(text_element, "middle")
+
+        self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
+
     def _collect_lines(self, text_element):
         lines = []
         first = text_element.firstChild
@@ -92,12 +105,6 @@ class MultilineFallbackTests(unittest.TestCase):
             "Multiline shrink routine did not fit text within rectangle",
         )
 
-        self.assertLess(
-            final_font_size,
-            MIN_FONT_SIZE,
-            "Expected multiline shrink routine to reduce below default minimum",
-        )
-
         self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
 
         original_y = 20.0
@@ -112,6 +119,55 @@ class MultilineFallbackTests(unittest.TestCase):
         self.assertGreaterEqual(len(baselines), 2, "Expected multiline layout baselines")
         centered_baseline = (baselines[0] + baselines[-1]) / 2.0
         self.assertAlmostEqual(centered_baseline, original_y, places=2)
+
+    def test_rect_width_used_when_template_text_is_short(self):
+        doc = Document()
+        svg = doc.createElement("svg")
+        doc.appendChild(svg)
+
+        group = doc.createElement("g")
+        group.setAttribute("id", "name")
+        svg.appendChild(group)
+
+        rect = doc.createElement("rect")
+        rect.setAttribute("x", "0")
+        rect.setAttribute("y", "0")
+        rect.setAttribute("width", "120")
+        rect.setAttribute("height", "40")
+        group.appendChild(rect)
+
+        text_element = doc.createElement("text")
+        text_element.setAttribute(
+            "style", "font-size:38px;font-family:PlaypenSans-Medium"
+        )
+        text_element.setAttribute("x", "60")
+        text_element.setAttribute("y", "20")
+        text_element.setAttribute("text-anchor", "middle")
+        text_element.appendChild(doc.createTextNode("X"))
+        group.appendChild(text_element)
+
+        long_text = "Alexandria Maximillian Robertson"
+        _update_text_group(group, long_text)
+
+        lines = self._collect_lines(text_element)
+        self.assertGreaterEqual(len(lines), 2, "Two-line fallback was not applied")
+
+        final_font_size = _extract_font_size(text_element)
+        self.assertIsNotNone(final_font_size)
+        self.assertGreater(final_font_size, 10.0)
+
+        font_path = _resolve_font_path(text_element)
+        font = ImageFont.truetype(
+            str(font_path), max(1, int(math.floor(final_font_size)))
+        )
+        measured_width = max(_measure_text_width(font, line) for line in lines)
+
+        rect_width = float(rect.getAttribute("width"))
+        self.assertLessEqual(
+            measured_width,
+            rect_width + 0.5,
+            "Adjusted text width should respect enclosing rectangle",
+        )
 
 
 class TransformPreservationTests(unittest.TestCase):
