@@ -433,6 +433,58 @@ def _compute_max_text_width(element: Element, template_lines: Sequence[str]) -> 
     return template_width
 
 
+class _RectGuide(NamedTuple):
+    centre: float
+    width: float
+
+
+def _extract_rect_guides(group: Element) -> Sequence[_RectGuide]:
+    """Return rectangle-based alignment guides for *group*."""
+
+    def _collect_rects(elements: Iterable[Element]) -> Iterator[Element]:
+        for candidate in elements:
+            if isinstance(candidate, Element) and candidate.tagName.lower() == "rect":
+                yield candidate
+
+    def _iter_direct_children(container: Element) -> Iterator[Element]:
+        for node in container.childNodes:
+            if isinstance(node, Element):
+                yield node
+
+    guides: list[_RectGuide] = []
+
+    direct_rects = list(
+        _collect_rects(
+            node for node in _iter_direct_children(group)
+        )
+    )
+    if direct_rects:
+        rect_candidates: Iterable[Element] = direct_rects
+    else:
+        rect_candidates = _collect_rects(group.getElementsByTagName("rect"))
+
+    for rect in rect_candidates:
+        width = _parse_length(rect.getAttribute("width"))
+        if width is None:
+            continue
+        x = _parse_length(rect.getAttribute("x"))
+        if x is None:
+            x = 0.0
+        transform_state = _capture_transform_state(rect)
+        centre_x = x + transform_state.dx + (width / 2.0)
+        guides.append(_RectGuide(centre_x, width))
+
+    return guides
+
+
+def _select_nearest_guide(guides: Sequence[_RectGuide], reference: Optional[float]) -> Optional[_RectGuide]:
+    if not guides:
+        return None
+    if reference is None:
+        return guides[0]
+    return min(guides, key=lambda guide: abs(guide.centre - reference))
+
+
 class _WidthFitResult(NamedTuple):
     fits: bool
     max_width: Optional[float]
@@ -773,12 +825,15 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
     text_elements = list(group.getElementsByTagName("text"))
 
     base_alignment = _resolve_layer_alignment(group)
+    base_alignment_explicit = base_alignment is not None
     if base_alignment is None:
         group_id = group.getAttribute("id").lower() if group.hasAttribute("id") else ""
         if group_id in LEFT_ALIGNED_GROUPS:
             base_alignment = "left"
         elif group_id in CENTER_ALIGNED_GROUPS:
             base_alignment = "center"
+
+    rect_guides = _extract_rect_guides(group)
 
     cached_dimensions = []
     for text_element in text_elements:
@@ -792,6 +847,22 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         else:
             original_x = None
             has_x = False
+        if has_x and original_x is not None:
+            original_x_value = _parse_length(original_x)
+        else:
+            original_x_value = None
+        transform_state = _capture_transform_state(text_element)
+        reference_center = None
+        if original_x_value is not None:
+            reference_center = original_x_value + transform_state.dx
+        elif not math.isclose(transform_state.dx, 0.0, abs_tol=1e-9):
+            reference_center = transform_state.dx
+        preferred_guide = _select_nearest_guide(rect_guides, reference_center)
+        preferred_center = (
+            preferred_guide.centre if preferred_guide is not None else None
+        )
+        if preferred_guide is not None and preferred_guide.width is not None:
+            max_width = preferred_guide.width
         if text_element.hasAttribute("text-anchor"):
             original_anchor = text_element.getAttribute("text-anchor")
             has_anchor = True
@@ -804,6 +875,7 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
                 "baseline_y": baseline_y,
                 "template_font_size": template_font_size,
                 "original_x": original_x,
+                "preferred_center": preferred_center,
                 "has_x": has_x,
                 "original_anchor": original_anchor,
                 "has_anchor": has_anchor,
@@ -811,7 +883,8 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         )
 
     for index, text_element in enumerate(text_elements):
-        element_alignment = _resolve_layer_alignment(text_element) or base_alignment
+        element_specific_alignment = _resolve_layer_alignment(text_element)
+        element_alignment = element_specific_alignment or base_alignment
 
         _set_text(text_element, text)
         _adjust_font_size(text_element, len(text), max_characters, reduction)
@@ -822,9 +895,21 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         template_font_size = cache.get("template_font_size")
         original_x = cache.get("original_x")
         has_original_x = cache.get("has_x", False)
+        preferred_center = cache.get("preferred_center")
         original_anchor = cache.get("original_anchor")
         has_original_anchor = cache.get("has_anchor", False)
         fit_alignment = element_alignment or "center"
+        center_alignment_explicit = (
+            fit_alignment == "center"
+            and (
+                element_specific_alignment == "center"
+                or (
+                    element_specific_alignment is None
+                    and base_alignment_explicit
+                    and base_alignment == "center"
+                )
+            )
+        )
         fit_result = _fit_text_within_width(
             text_element,
             text,
@@ -836,6 +921,11 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
 
         if element_alignment:
             _apply_alignment(text_element, element_alignment)
+
+        center_adjusted = False
+        if center_alignment_explicit and preferred_center is not None:
+            text_element.setAttribute("x", _format_float(preferred_center))
+            center_adjusted = True
 
         multiline_applied = False
         if (
@@ -875,6 +965,8 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
             and has_original_x
             and original_x is not None
             and math.isclose(fit_result.transform_dx, 0.0, abs_tol=1e-9)
+            and not center_adjusted
+            and (fit_alignment != "center" or not center_alignment_explicit)
         ):
             text_element.setAttribute("x", original_x)
 
