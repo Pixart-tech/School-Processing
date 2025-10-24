@@ -66,6 +66,18 @@ def _build_child_output_base(first_name: str, last_name: str, school_name: str) 
     return base or "student_school"
 
 
+def _extract_outer_code_prefix(value: object, length: int = 3) -> str:
+    raw_value = _normalise_string(value)
+    if not raw_value:
+        return ""
+
+    digits = re.findall(r"\d", raw_value)
+    if digits:
+        return "".join(digits[:length])
+
+    return raw_value[:length]
+
+
 _title_case_regex = re.compile(r"\b\w+\b")
 
 
@@ -1226,13 +1238,18 @@ def personalize_id_card(
     if not school_id:
         return False
 
+    outer_code_prefix = _extract_outer_code_prefix(record.get("outer_code"))
+    template_folder_name = outer_code_prefix or school_id
+
     user_id = _normalise_string(record.get("user_id"))
     if not user_id:
         return False
 
-    template_dir = template_root / school_id
+    template_dir = template_root / template_folder_name
     if not template_dir.exists():
-        raise TemplateNotFoundError(f"Template directory not found for school: {school_id}")
+        raise TemplateNotFoundError(
+            f"Template directory not found for school: {school_name_raw} (expected folder '{template_folder_name}')"
+        )
 
     front_template = _find_template_file(template_dir, "FRONT")
     back_template = _find_template_file(template_dir, "BACK")
@@ -1324,8 +1341,8 @@ def personalize_id_card(
 
     school_branch = clean_branch_name(school_name_raw)
 
-    school_id = _normalise_string(record.get("school_id"))
-    photo_school_root = photo_root / school_id if school_id else photo_root
+    photo_folder_name = outer_code_prefix or school_id
+    photo_school_root = photo_root / photo_folder_name if photo_folder_name else photo_root
 
     child_photo_path = photo_school_root / "PARTIAL" / f"{user_id}.png"
     father_photo_path = photo_school_root / "PARTIAL" / f"{father_photo_id}.png" if father_photo_id else None
