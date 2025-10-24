@@ -226,8 +226,33 @@ def _collect_id_card_documents(
       pdfs = _collect_child_pdf_paths(school_dir)
       if not pdfs:
          continue
-      school_id = school_dir.name
-      label = name_overrides.get(school_id) or _sanitize_school_label(school_dir.name)
+      school_id: Optional[str] = None
+      label_source = school_dir.name
+      parts = school_dir.name.split("_", 1)
+      if len(parts) == 2:
+         potential_id, remainder = parts
+         school_id = potential_id or None
+         if remainder:
+            label_source = remainder
+      if school_id is None:
+         school_id = school_dir.name
+
+      label_override = None
+      label_file = school_dir / "verification_label.txt"
+      if label_file.is_file():
+         try:
+            raw_label = label_file.read_text(encoding="utf-8").strip()
+         except OSError as exc:
+            print(f"Failed to read {label_file}: {exc}")
+         else:
+            if raw_label:
+               label_override = _sanitize_school_label(raw_label)
+
+      label = (
+         name_overrides.get(school_id)
+         or label_override
+         or _sanitize_school_label(label_source)
+      )
       documents.append(SchoolDocuments(school_id, label, pdfs))
    return documents
 
@@ -953,7 +978,7 @@ def _merge_cover_pages_worker() -> None:
          id_verification_created = 0
          for doc in id_documents:
             verification_name = (
-               f"{date_prefix}_{doc.label}_ID_Card_verify.pdf"
+               f"{date_prefix}_{doc.label}_ID card_verify.pdf"
             )
             if _create_verification_pdf(doc.pdfs, verification_root / verification_name):
                id_verification_created += 1

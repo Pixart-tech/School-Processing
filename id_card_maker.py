@@ -50,6 +50,58 @@ def _sanitize_filename_component(value: str, fallback: str) -> str:
     return sanitized or fallback
 
 
+def _extract_outer_code_prefix(raw_outer_code: str) -> Optional[str]:
+    """Return the first three digits from the provided outer code value."""
+
+    if not raw_outer_code:
+        return None
+
+    digits = "".join(ch for ch in raw_outer_code if ch.isdigit())
+    if digits:
+        return digits.zfill(3)[:3]
+
+    cleaned = raw_outer_code.strip()
+    if not cleaned:
+        return None
+
+    return cleaned[:3]
+
+
+def _build_school_verification_label(
+    school_name: str, outer_code_prefix: Optional[str]
+) -> str:
+    """Construct the reusable label used for verification PDFs."""
+
+    parts = []
+    if outer_code_prefix:
+        parts.append(_sanitize_filename_component(outer_code_prefix, "000"))
+    parts.append(_sanitize_filename_component(school_name, "School"))
+    label = "_".join(part for part in parts if part)
+    return label or "School"
+
+
+def _write_verification_label(
+    directory: Path, school_name: str, outer_code_prefix: Optional[str]
+) -> None:
+    """Persist the verification label for downstream merging utilities."""
+
+    label = _build_school_verification_label(school_name, outer_code_prefix)
+    path = directory / "verification_label.txt"
+
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        existing = ""
+
+    if existing == label:
+        return
+
+    try:
+        path.write_text(label, encoding="utf-8")
+    except OSError as exc:
+        print(f"Failed to write verification label to {path}: {exc}")
+
+
 def _build_child_output_base(first_name: str, last_name: str, school_name: str) -> str:
     parts = []
     if first_name:
@@ -1230,9 +1282,31 @@ def personalize_id_card(
     if not user_id:
         return False
 
-    template_dir = template_root / school_id
-    if not template_dir.exists():
-        raise TemplateNotFoundError(f"Template directory not found for school: {school_id}")
+    outer_code_value = _normalise_string(record.get("outer_code"))
+    outer_code_prefix = (
+        _extract_outer_code_prefix(outer_code_value) if outer_code_value else None
+    )
+
+    template_dir: Optional[Path] = None
+    attempted_dirs = []
+    if outer_code_prefix:
+        candidate = template_root / outer_code_prefix
+        attempted_dirs.append(candidate)
+        if candidate.exists():
+            template_dir = candidate
+    if template_dir is None:
+        candidate = template_root / school_id
+        attempted_dirs.append(candidate)
+        if candidate.exists():
+            template_dir = candidate
+
+    if template_dir is None:
+        attempted_display = ", ".join(str(path) for path in attempted_dirs) or str(
+            template_root / school_id
+        )
+        raise TemplateNotFoundError(
+            f"Template directory not found for school: {school_id}. Attempted: {attempted_display}"
+        )
 
     front_template = _find_template_file(template_dir, "FRONT")
     back_template = _find_template_file(template_dir, "BACK")
@@ -1247,6 +1321,8 @@ def personalize_id_card(
     child_output_dir = school_output_dir / child_output_base
     photos_output_dir = child_output_dir / "working" / "images"
 
+    _ensure_directory(school_output_dir)
+    _write_verification_label(school_output_dir, school_name_raw, outer_code_prefix)
     _ensure_directory(child_output_dir)
     working_dir = child_output_dir / "working"
     _prepare_working_directory(template_dir, working_dir)
