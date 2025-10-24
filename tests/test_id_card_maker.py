@@ -21,8 +21,10 @@ from id_card_maker import (
     MULTILINE_MIN_FONT_SIZE,
     _apply_alignment,
     _extract_font_size,
+    _build_school_verification_label,
     _measure_text_width,
     _parse_length,
+    _extract_outer_code_prefix,
     _resolve_font_path,
     _update_text_group,
 )
@@ -41,6 +43,22 @@ class MultilineFallbackTests(unittest.TestCase):
         _apply_alignment(text_element, "middle")
 
         self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
+
+
+class VerificationLabelTests(unittest.TestCase):
+    def test_extract_outer_code_prefix_prefers_digits(self):
+        self.assertEqual(_extract_outer_code_prefix("1234567b"), "123")
+
+    def test_extract_outer_code_prefix_pads_short_values(self):
+        self.assertEqual(_extract_outer_code_prefix("9"), "009")
+
+    def test_build_label_with_prefix(self):
+        label = _build_school_verification_label("Sunrise Public School", "123")
+        self.assertEqual(label, "123_Sunrise_Public_School")
+
+    def test_build_label_without_prefix(self):
+        label = _build_school_verification_label("Sunrise Public School", None)
+        self.assertEqual(label, "Sunrise_Public_School")
 
     def _collect_lines(self, text_element):
         lines = []
