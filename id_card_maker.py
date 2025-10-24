@@ -617,6 +617,13 @@ def _fit_text_within_width(
         else None
     )
 
+    ddx = 0.0
+
+    if alignment == "center":
+        ddx = (max_width - measured_width)/2 if (max_width is not None and measured_width is not None and max_width > measured_width) else 0.0
+    elif alignment == "right":
+        ddx = max_width 
+
     if adjusted_baseline is not None:
         element.setAttribute("y", _format_float(adjusted_baseline))
     elif not math.isclose(transform_state.dy, 0.0, abs_tol=1e-9):
@@ -624,6 +631,9 @@ def _fit_text_within_width(
 
     if not math.isclose(transform_state.dx, 0.0, abs_tol=1e-9):
         _apply_coordinate_offset(element, "x", transform_state.dx)
+
+    if not math.isclose(ddx, 0.0, abs_tol=1e-9):
+        _apply_coordinate_offset(element, "x", ddx)
 
     element.setAttribute("dominant-baseline", "alphabetic")
 
