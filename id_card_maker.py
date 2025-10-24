@@ -37,6 +37,14 @@ def _normalise_string(value: object, default: str = "") -> str:
     return value_str if value_str else default
 
 
+def _resolve_address_value(record: Dict[str, object]) -> str:
+    """Return the preferred address value for an ID card record."""
+
+    address = _normalise_string(record.get("address"))
+    current_address = _normalise_string(record.get("current_address"))
+    return address or current_address
+
+
 def _ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -1347,7 +1355,7 @@ def personalize_id_card(
         expiry_date = _format_date(expiry_date)
 
     gender = _normalise_string(record.get("gender"))
-    current_address = _normalise_string(record.get("current_address"))
+    address_value = _resolve_address_value(record)
 
     department_value = record.get("department")
     department = (
@@ -1456,10 +1464,10 @@ def personalize_id_card(
     text_updates_back["blood_group"] = text_updates_back["blood"]
 
     address_updates_front = {
-        "address": current_address,
-        "address2": current_address,
+        "address": address_value,
+        "address2": address_value,
     }
-    address_updates_back = {"address": current_address}
+    address_updates_back = {"address": address_value}
 
     image_updates_front = {"pic1": child_photo_name or ""}
     image_updates_back = {

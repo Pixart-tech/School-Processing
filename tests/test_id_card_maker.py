@@ -27,6 +27,7 @@ from id_card_maker import (
     _extract_outer_code_prefix,
     _resolve_font_path,
     _update_text_group,
+    _resolve_address_value,
 )
 
 
@@ -312,6 +313,20 @@ class TransformPreservationTests(unittest.TestCase):
         self.assertAlmostEqual(_extract_font_size(text_element), original_font_size)
         self.assertEqual(text_element.getAttribute("dominant-baseline"), "alphabetic")
         self.assertEqual(len(text_element.getElementsByTagName("tspan")), 0)
+
+
+class AddressResolutionTests(unittest.TestCase):
+    def test_prefers_new_address_field(self):
+        record = {"address": "New Address", "current_address": "Old Address"}
+        self.assertEqual(_resolve_address_value(record), "New Address")
+
+    def test_falls_back_to_current_address(self):
+        record = {"current_address": "Legacy Address"}
+        self.assertEqual(_resolve_address_value(record), "Legacy Address")
+
+    def test_handles_missing_values(self):
+        record = {"address": "", "current_address": None}
+        self.assertEqual(_resolve_address_value(record), "")
 
 
 if __name__ == "__main__":
