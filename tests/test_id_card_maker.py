@@ -27,7 +27,6 @@ from id_card_maker import (
     _extract_outer_code_prefix,
     _resolve_font_path,
     _update_text_group,
-    _update_address_group,
 )
 
 
@@ -313,87 +312,6 @@ class TransformPreservationTests(unittest.TestCase):
         self.assertAlmostEqual(_extract_font_size(text_element), original_font_size)
         self.assertEqual(text_element.getAttribute("dominant-baseline"), "alphabetic")
         self.assertEqual(len(text_element.getElementsByTagName("tspan")), 0)
-
-
-class AddressGroupTests(unittest.TestCase):
-    def _create_group(self):
-        doc = Document()
-        svg = doc.createElement("svg")
-        doc.appendChild(svg)
-
-        group = doc.createElement("g")
-        group.setAttribute("id", "address")
-        svg.appendChild(group)
-
-        rect = doc.createElement("rect")
-        rect.setAttribute("x", "0")
-        rect.setAttribute("y", "0")
-        rect.setAttribute("width", "70")
-        rect.setAttribute("height", "45")
-        group.appendChild(rect)
-
-        text_element = doc.createElement("text")
-        text_element.setAttribute(
-            "style", "font-size:38px;font-family:PlaypenSans-Medium"
-        )
-        text_element.setAttribute("x", "10")
-        text_element.setAttribute("y", "15")
-        text_element.setAttribute("text-anchor", "start")
-        text_element.appendChild(doc.createTextNode("Template Address"))
-        group.appendChild(text_element)
-
-        return group, text_element, rect
-
-    def _collect_lines(self, text_element):
-        lines = []
-        for tspan in text_element.getElementsByTagName("tspan"):
-            if tspan.firstChild is not None:
-                lines.append(tspan.firstChild.data)
-            else:
-                lines.append("")
-        return lines or [text_element.firstChild.data]
-
-    def test_manual_lines_collapsed_to_three(self):
-        group, text_element, _rect = self._create_group()
-        manual_text = "Line 1\nLine 2\nLine 3\nLine 4"
-
-        _update_address_group(group, manual_text)
-
-        lines = self._collect_lines(text_element)
-        self.assertEqual(len(lines), 3)
-        self.assertEqual(lines[-1], "Line 3 Line 4")
-
-    def test_long_address_shrinks_with_three_line_limit(self):
-        group, text_element, rect = self._create_group()
-        rect.setAttribute("width", "80")
-        long_address = (
-            "1234 Evergreen Terrace Springfield Near Riverbank Opposite Museum"
-        )
-
-        _update_address_group(group, long_address)
-
-        lines = self._collect_lines(text_element)
-        self.assertLessEqual(len(lines), 3)
-        self.assertEqual(len(lines), 3)
-
-        final_font_size = _extract_font_size(text_element)
-        self.assertIsNotNone(final_font_size)
-        self.assertGreaterEqual(final_font_size, MULTILINE_MIN_FONT_SIZE)
-        self.assertLess(final_font_size, 38.0)
-
-        font_path = _resolve_font_path(text_element)
-        self.assertTrue(font_path.exists())
-        font = ImageFont.truetype(
-            str(font_path), max(1, int(math.floor(final_font_size)))
-        )
-        measured_width = max(_measure_text_width(font, line) for line in lines if line)
-        rect_width = float(rect.getAttribute("width"))
-
-        self.assertLessEqual(
-            measured_width,
-            rect_width + 0.5,
-            "Address text should be reduced to fit within available width",
-        )
 
 
 if __name__ == "__main__":

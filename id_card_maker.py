@@ -6,7 +6,7 @@ import math
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple, NamedTuple, Union, List
+from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple, NamedTuple, Union
 from PIL import ImageFont
 from xml.dom.minidom import Document, Element, Node, parse
 
@@ -285,10 +285,7 @@ def _set_multiline_text(
             template_x = template_x_positions[index]
             if template_x:
                 tspan.setAttribute("x", template_x)
-        if index == 0:
-            if line_height is not None:
-                tspan.setAttribute("dy", "0px")
-        else:
+        if index > 0:
             if line_height is not None:
                 tspan.setAttribute("dy", f"{_format_float(line_height)}px")
             else:
@@ -344,20 +341,6 @@ def _extract_template_lines(element: Element) -> Sequence[str]:
             lines.append(combined)
 
     return lines
-
-
-def _find_group_rect_width(element: Element) -> Optional[float]:
-    widths: List[float] = []
-    for rect in element.getElementsByTagName("rect"):
-        if not rect.hasAttribute("width"):
-            continue
-        width = _parse_length(rect.getAttribute("width"))
-        if width is None or width <= 0:
-            continue
-        widths.append(width)
-    if not widths:
-        return None
-    return max(widths)
 
 
 def _set_font_size(element: Element, font_size: float) -> None:
@@ -884,31 +867,6 @@ def _apply_multiline_layout(
     return effective_size, measured_width
 
 
-def _apply_lines_layout(
-    element: Element,
-    lines: Sequence[str],
-    fit_result: _WidthFitResult,
-    *,
-    alignment: str,
-    min_font_size: float = MIN_FONT_SIZE,
-    template_x_positions: Optional[Sequence[str]] = None,
-) -> Optional[Tuple[Sequence[str], float, Optional[float]]]:
-    cleaned_lines = [line.strip() for line in lines if line.strip()]
-    if len(cleaned_lines) < 2:
-        return None
-
-    effective_size, measured_width = _apply_multiline_layout(
-        element,
-        cleaned_lines,
-        fit_result,
-        alignment=alignment,
-        min_font_size=min_font_size,
-        template_x_positions=template_x_positions,
-    )
-
-    return cleaned_lines, effective_size, measured_width
-
-
 def _apply_two_line_layout(
     element: Element,
     text: str,
@@ -919,7 +877,10 @@ def _apply_two_line_layout(
     template_x_positions: Optional[Sequence[str]] = None,
 ) -> Optional[Tuple[Sequence[str], float, Optional[float]]]:
     lines = _split_text_into_two_lines(text)
-    return _apply_lines_layout(
+    if len(lines) < 2:
+        return None
+
+    effective_size, measured_width = _apply_multiline_layout(
         element,
         lines,
         fit_result,
@@ -928,39 +889,10 @@ def _apply_two_line_layout(
         template_x_positions=template_x_positions,
     )
 
-
-def _split_text_into_three_lines(text: str) -> Sequence[str]:
-    cleaned = text.strip()
-    if not cleaned:
-        return [""]
-
-    words = cleaned.split()
-    if len(words) < 3:
-        return _split_text_into_two_lines(text)
-
-    best_lines: Optional[Sequence[str]] = None
-    best_score = float("inf")
-
-    for first_break in range(1, len(words) - 1):
-        for second_break in range(first_break + 1, len(words)):
-            first = " ".join(words[:first_break]).strip()
-            second = " ".join(words[first_break:second_break]).strip()
-            third = " ".join(words[second_break:]).strip()
-            if not first or not second or not third:
-                continue
-            lengths = [len(first), len(second), len(third)]
-            score = max(lengths) - min(lengths)
-            if score < best_score:
-                best_score = score
-                best_lines = [first, second, third]
-
-    if best_lines:
-        return best_lines
-
-    return _split_text_into_two_lines(text)
+    return lines, effective_size, measured_width
 
 
-def _shrink_multiline_text(
+def _shrink_two_line_text(
     element: Element,
     lines: Sequence[str],
     fit_result: _WidthFitResult,
@@ -1003,25 +935,6 @@ def _shrink_multiline_text(
     return applied_size, measured_width
 
 
-def _shrink_two_line_text(
-    element: Element,
-    lines: Sequence[str],
-    fit_result: _WidthFitResult,
-    *,
-    alignment: str,
-    absolute_min_font_size: float,
-    template_x_positions: Optional[Sequence[str]],
-) -> Optional[Tuple[float, Optional[float]]]:
-    return _shrink_multiline_text(
-        element,
-        lines,
-        fit_result,
-        alignment=alignment,
-        absolute_min_font_size=absolute_min_font_size,
-        template_x_positions=template_x_positions,
-    )
-
-
 def _update_text_group(
     group: Element,
     text: str,
@@ -1029,8 +942,6 @@ def _update_text_group(
     max_characters: Optional[int] = None,
     reduction: float = 0.0,
     text_length_override: Optional[int] = None,
-    fallback_line_counts: Sequence[int] = (2,),
-    preset_lines: Optional[Sequence[str]] = None,
 ) -> None:
     text_elements = list(group.getElementsByTagName("text"))
 
@@ -1042,14 +953,10 @@ def _update_text_group(
         elif group_id in CENTER_ALIGNED_GROUPS:
             base_alignment = "center"
 
-    group_rect_width = _find_group_rect_width(group)
-
     cached_dimensions = []
     for text_element in text_elements:
         template_lines = _extract_template_lines(text_element)
         max_width = _compute_max_text_width(text_element, template_lines)
-        if group_rect_width is not None:
-            max_width = group_rect_width
         baseline_y = _parse_length(text_element.getAttribute("y") if text_element.hasAttribute("y") else "")
         template_font_size = _extract_font_size(text_element)
         template_x_positions = _extract_tspan_x_positions(text_element)
@@ -1077,13 +984,6 @@ def _update_text_group(
                 "has_anchor": has_anchor,
             }
         )
-
-    preset_lines_list: List[str] = []
-    if preset_lines:
-        preset_lines_list = [line.strip() for line in preset_lines if line and line.strip()]
-        if len(preset_lines_list) > 3:
-            extra = " ".join(preset_lines_list[2:])
-            preset_lines_list = preset_lines_list[:2] + [extra]
 
     for index, text_element in enumerate(text_elements):
         element_alignment = _resolve_layer_alignment(text_element) or base_alignment
@@ -1122,108 +1022,36 @@ def _update_text_group(
         
         print(f"Text '{text}' fit result: fits={fit_result.fits}, id={group.getAttribute('id')}, max_width={fit_result.max_width}, font_size={fit_result.font_size}")
         
-        fallback_alignment = element_alignment or "center"
-        manual_lines_applied = False
-        manual_lines_fit = False
-        seen_line_options: List[Tuple[str, ...]] = []
-
-        if preset_lines_list:
-            manual_result = _apply_lines_layout(
-                text_element,
-                preset_lines_list,
-                fit_result,
-                alignment=fallback_alignment,
-                min_font_size=MULTILINE_MIN_FONT_SIZE,
-                template_x_positions=template_x_positions,
-            )
-            if manual_result is not None:
-                manual_lines_applied = True
-                lines_applied, _size, measured_width = manual_result
-                current_lines = list(lines_applied)
-                multiline_applied = True
-                seen_line_options.append(tuple(lines_applied))
-                final_measured_width = measured_width
-                if (
-                    fit_result.max_width is not None
-                    and fit_result.max_width > 0
-                    and final_measured_width is not None
-                    and final_measured_width > fit_result.max_width
-                ):
-                    shrink_result = _shrink_multiline_text(
-                        text_element,
-                        lines_applied,
-                        fit_result,
-                        alignment=fallback_alignment,
-                        absolute_min_font_size=MULTILINE_MIN_FONT_SIZE,
-                        template_x_positions=template_x_positions,
-                    )
-                    if shrink_result is not None:
-                        _applied_size, shrink_width = shrink_result
-                        if shrink_width is not None:
-                            final_measured_width = shrink_width
-                if (
-                    fit_result.max_width is None
-                    or final_measured_width is None
-                    or final_measured_width <= fit_result.max_width
-                ):
-                    manual_lines_fit = True
-
-        should_attempt_auto_fallback = (
+        if (
             text.strip()
             and fit_result is not None
-            and fit_result.max_width is not None
             and not fit_result.fits
-            and not manual_lines_applied
-        )
+            and fit_result.max_width is not None
+        ):
+            fallback_alignment = element_alignment or "center"
+            fallback_result = _apply_two_line_layout(
+                text_element,
+                text,
+                fit_result,
+                alignment=fallback_alignment,
+                template_x_positions=template_x_positions,
+            )
 
-        if should_attempt_auto_fallback:
-            for count in fallback_line_counts:
-                if count <= 1:
-                    continue
-                if count == 2:
-                    candidate_lines = _split_text_into_two_lines(text)
-                elif count == 3:
-                    candidate_lines = _split_text_into_three_lines(text)
-                else:
-                    candidate_lines = _split_text_into_two_lines(text)
-                cleaned_candidate = [line.strip() for line in candidate_lines if line.strip()]
-                candidate_key = tuple(cleaned_candidate)
-                if len(cleaned_candidate) < 2:
-                    continue
-                if candidate_key in seen_line_options:
-                    continue
-                if (
-                    preset_lines_list
-                    and len(preset_lines_list) >= 2
-                    and len(cleaned_candidate) < len(preset_lines_list)
-                ):
-                    continue
-                fallback_result = _apply_lines_layout(
-                    text_element,
-                    cleaned_candidate,
-                    fit_result,
-                    alignment=fallback_alignment,
-                    min_font_size=MULTILINE_MIN_FONT_SIZE,
-                    template_x_positions=template_x_positions,
-                )
-
-                if fallback_result is None:
-                    continue
-
-                seen_line_options.append(candidate_key)
+            if fallback_result is not None:
                 multiline_applied = True
-                lines_applied, _size, measured_width = fallback_result
-                current_lines = list(lines_applied)
-                final_measured_width = measured_width
+                lines, _size, measured_width = fallback_result
+                current_lines = list(lines)
+                if measured_width is not None:
+                    final_measured_width = measured_width
                 if (
                     fit_result.max_width is not None
                     and fit_result.max_width > 0
                     and final_measured_width is not None
                     and final_measured_width > fit_result.max_width
                 ):
-                    shrink_result = _shrink_multiline_text(
+                    shrink_result = _shrink_two_line_text(
                         text_element,
-                        lines_applied,
+                        lines,
                         fit_result,
                         alignment=fallback_alignment,
                         absolute_min_font_size=MULTILINE_MIN_FONT_SIZE,
@@ -1233,13 +1061,6 @@ def _update_text_group(
                         _applied_size, shrink_width = shrink_result
                         if shrink_width is not None:
                             final_measured_width = shrink_width
-
-                if (
-                    fit_result.max_width is None
-                    or final_measured_width is None
-                    or final_measured_width <= fit_result.max_width
-                ):
-                    break
 
         final_alignment = element_alignment or base_alignment or "center"
 
@@ -1252,9 +1073,7 @@ def _update_text_group(
                 if width_candidate is not None:
                     final_measured_width = width_candidate
 
-        if final_alignment == "center" and math.isclose(
-            fit_result.transform_dx, 0.0, abs_tol=1e-9
-        ):
+        if final_alignment == "center":
             anchor_before = (
                 _normalise_text_anchor(original_anchor)
                 if has_original_anchor
@@ -1274,15 +1093,15 @@ def _update_text_group(
                     )
                 if reference_left is not None:
                     if (
-                        final_measured_width is not None
-                        and final_measured_width >= 0.0
-                    ):
-                        target_width = final_measured_width
-                    elif (
                         fit_result.max_width is not None
                         and fit_result.max_width > 0
                     ):
                         target_width = fit_result.max_width
+                    elif (
+                        final_measured_width is not None
+                        and final_measured_width >= 0.0
+                    ):
+                        target_width = final_measured_width
                     else:
                         target_width = None
                     if target_width is not None:
@@ -1321,38 +1140,17 @@ def _update_text_group(
 
 
 def _update_address_group(group: Element, text: str) -> None:
-    cleaned_text = text.replace("\r", "\n")
-    preset_lines = [line.strip() for line in cleaned_text.split("\n") if line.strip()]
+    lines = [line.strip() for line in text.replace("\r", "").split("\n") if line.strip()]
+    if not lines:
+        lines = [""]
 
-    if len(preset_lines) <= 1:
-        preset_lines = []
-    elif len(preset_lines) > 3:
-        preset_lines = preset_lines[:2] + [" ".join(preset_lines[2:])]
+    base_alignment = _resolve_layer_alignment(group) or "left"
 
-    collapsed_text = " ".join(preset_lines).strip()
-    if not collapsed_text:
-        collapsed_text = text.strip()
-
-    collapsed_text = collapsed_text or ""
-
-    fallback_candidates: List[int] = []
-    if preset_lines:
-        unique_counts = []
-        manual_count = max(len(preset_lines), 2)
-        unique_counts.append(manual_count)
-        for count in (3, 2):
-            if count not in unique_counts:
-                unique_counts.append(count)
-        fallback_candidates = unique_counts
-    else:
-        fallback_candidates = [3, 2]
-
-    _update_text_group(
-        group,
-        collapsed_text,
-        fallback_line_counts=tuple(fallback_candidates),
-        preset_lines=preset_lines,
-    )
+    for text_element in group.getElementsByTagName("text"):
+        element_alignment = _resolve_layer_alignment(text_element) or base_alignment
+        if element_alignment:
+            _apply_alignment(text_element, element_alignment)
+        _set_multiline_text(text_element, lines)
 
 
 def _find_group_map(doc: Document) -> Dict[str, Element]:
