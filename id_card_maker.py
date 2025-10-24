@@ -643,7 +643,7 @@ def _fit_text_within_width(
     ddx = 0.0
 
     if alignment == "center":
-        ddx = (max_width - measured_width)/2 if (max_width is not None and measured_width is not None and max_width > measured_width) else 0.0
+        ddx = 0.0
     elif alignment == "right":
         ddx = max_width 
 
@@ -1021,11 +1021,7 @@ def _update_text_group(
                 if width_candidate is not None:
                     final_measured_width = width_candidate
 
-        if (
-            final_alignment == "center"
-            and final_measured_width is not None
-            and final_measured_width >= 0.0
-        ):
+        if final_alignment == "center":
             anchor_before = (
                 _normalise_text_anchor(original_anchor)
                 if has_original_anchor
@@ -1044,7 +1040,27 @@ def _update_text_group(
                         text_element.getAttribute("x")
                     )
                 if reference_left is not None:
-                    center_value = reference_left + (final_measured_width / 2.0)
+                    if (
+                        fit_result.max_width is not None
+                        and fit_result.max_width > 0
+                    ):
+                        target_width = fit_result.max_width
+                    elif (
+                        final_measured_width is not None
+                        and final_measured_width >= 0.0
+                    ):
+                        target_width = final_measured_width
+                    else:
+                        target_width = None
+                    if target_width is not None:
+                        center_value = reference_left + (target_width / 2.0)
+                    elif final_measured_width is not None:
+                        center_value = reference_left + (final_measured_width / 2.0)
+                    else:
+                        center_value = None
+                else:
+                    center_value = None
+                if center_value is not None:
                     text_element.setAttribute("x", _format_float(center_value))
                     _synchronise_tspan_positions(text_element)
                     center_adjusted = True
