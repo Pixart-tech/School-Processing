@@ -562,6 +562,8 @@ def _fit_text_within_width(
 ) -> _WidthFitResult:
     transform_state = _capture_transform_state(element)
     font_size = _extract_font_size(element)
+    
+    
     if font_size is None:
         font_size = template_font_size
     if font_size is None:
@@ -582,7 +584,7 @@ def _fit_text_within_width(
             )
         except OSError:
             font_for_measurement = None
-
+    
     if font_for_measurement is not None:
         measured_width = _measure_text_width(font_for_measurement, text)
         initial_measured_width = measured_width
@@ -608,7 +610,7 @@ def _fit_text_within_width(
             measured_width = _measure_text_width(font_for_measurement, text)
 
     _set_font_size(element, round(current_size, 2))
-
+    
     adjusted_baseline = (
         (baseline_y + transform_state.dy)
         if baseline_y is not None
@@ -644,6 +646,7 @@ def _fit_text_within_width(
 
     width_tolerance = 0.05
     fits = True
+    
     if (
         max_width is not None
         and max_width > 0
@@ -901,7 +904,7 @@ def _update_text_group(
 
         _set_text(text_element, text)
         effective_length = text_length_override if text_length_override is not None else len(text)
-        _adjust_font_size(text_element, effective_length, max_characters, reduction)
+        #_adjust_font_size(text_element, effective_length, max_characters, reduction)
 
         cache = cached_dimensions[index] if index < len(cached_dimensions) else {}
         max_width = cache.get("max_width")
@@ -912,7 +915,7 @@ def _update_text_group(
         original_anchor = cache.get("original_anchor")
         has_original_anchor = cache.get("has_anchor", False)
         fit_alignment = element_alignment or "center"
-        print(group.getAttribute("id"))
+
         fit_result = _fit_text_within_width(
             text_element,
             text,
@@ -928,6 +931,8 @@ def _update_text_group(
         final_measured_width = fit_result.measured_width
         multiline_applied = False
         center_adjusted = False
+        
+        print(f"Text '{text}' fit result: fits={fit_result.fits}, id={group.getAttribute('id')}, max_width={fit_result.max_width}, font_size={fit_result.font_size}")
         
         if (
             text.strip()
