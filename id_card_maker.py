@@ -193,8 +193,28 @@ def _set_text(element: Element, text: str) -> None:
     element.appendChild(element.ownerDocument.createTextNode(text))
 
 
+def _extract_tspan_x_positions(element: Element) -> Sequence[str]:
+    positions = []
+    for node in element.childNodes:
+        if node.nodeType != Node.ELEMENT_NODE:
+            continue
+        if not hasattr(node, "tagName"):
+            continue
+        if node.tagName.lower() != "tspan":
+            continue
+        if node.hasAttribute("x"):
+            positions.append(node.getAttribute("x"))
+        else:
+            positions.append("")
+    return positions
+
+
 def _set_multiline_text(
-    element: Element, lines: Sequence[str], *, line_height: Optional[float] = None
+    element: Element,
+    lines: Sequence[str],
+    *,
+    line_height: Optional[float] = None,
+    template_x_positions: Optional[Sequence[str]] = None,
 ) -> None:
     document = element.ownerDocument
     base_x = element.getAttribute("x") if element.hasAttribute("x") else ""
@@ -205,16 +225,19 @@ def _set_multiline_text(
     if not lines:
         lines = [""]
 
-    element.appendChild(document.createTextNode(lines[0]))
-
-    for line in lines[1:]:
+    for index, line in enumerate(lines):
         tspan = document.createElement("tspan")
         if base_x:
             tspan.setAttribute("x", base_x)
-        if line_height is not None:
-            tspan.setAttribute("dy", f"{_format_float(line_height)}px")
-        else:
-            tspan.setAttribute("dy", "1em")
+        elif template_x_positions and index < len(template_x_positions):
+            template_x = template_x_positions[index]
+            if template_x:
+                tspan.setAttribute("x", template_x)
+        if index > 0:
+            if line_height is not None:
+                tspan.setAttribute("dy", f"{_format_float(line_height)}px")
+            else:
+                tspan.setAttribute("dy", "1em")
         tspan.appendChild(document.createTextNode(line))
         element.appendChild(tspan)
 
@@ -691,6 +714,7 @@ def _apply_multiline_layout(
     alignment: str = "center",
     min_font_size: float = MIN_FONT_SIZE,
     initial_size: Optional[float] = None,
+    template_x_positions: Optional[Sequence[str]] = None,
 ) -> Tuple[float, Optional[float]]:
     if initial_size is not None:
         effective_size = max(initial_size, min_font_size)
@@ -781,7 +805,12 @@ def _apply_multiline_layout(
     element.setAttribute("y", _format_float(first_baseline))
     element.setAttribute("dominant-baseline", "alphabetic")
 
-    _set_multiline_text(element, lines, line_height=baseline_spacing)
+    _set_multiline_text(
+        element,
+        lines,
+        line_height=baseline_spacing,
+        template_x_positions=template_x_positions,
+    )
 
     return effective_size, measured_width
 
@@ -793,6 +822,7 @@ def _apply_two_line_layout(
     *,
     alignment: str = "center",
     min_font_size: float = MIN_FONT_SIZE,
+    template_x_positions: Optional[Sequence[str]] = None,
 ) -> Optional[Tuple[Sequence[str], float, Optional[float]]]:
     lines = _split_text_into_two_lines(text)
     if len(lines) < 2:
@@ -804,6 +834,7 @@ def _apply_two_line_layout(
         fit_result,
         alignment=alignment,
         min_font_size=min_font_size,
+        template_x_positions=template_x_positions,
     )
 
     return lines, effective_size, measured_width
@@ -816,6 +847,7 @@ def _shrink_two_line_text(
     *,
     alignment: str,
     absolute_min_font_size: float,
+    template_x_positions: Optional[Sequence[str]],
 ) -> Optional[Tuple[float, Optional[float]]]:
     max_width = fit_result.max_width
     if max_width is None or max_width <= 0:
@@ -838,6 +870,7 @@ def _shrink_two_line_text(
             alignment=alignment,
             min_font_size=absolute_min_font_size,
             initial_size=applied_size,
+            template_x_positions=template_x_positions,
         )
         if measured_width is None or measured_width <= max_width:
             break
@@ -874,6 +907,7 @@ def _update_text_group(
         max_width = _compute_max_text_width(text_element, template_lines)
         baseline_y = _parse_length(text_element.getAttribute("y") if text_element.hasAttribute("y") else "")
         template_font_size = _extract_font_size(text_element)
+        template_x_positions = _extract_tspan_x_positions(text_element)
         if text_element.hasAttribute("x"):
             original_x = text_element.getAttribute("x")
             has_x = True
@@ -891,6 +925,7 @@ def _update_text_group(
                 "max_width": max_width,
                 "baseline_y": baseline_y,
                 "template_font_size": template_font_size,
+                "template_x_positions": template_x_positions,
                 "original_x": original_x,
                 "has_x": has_x,
                 "original_anchor": original_anchor,
@@ -910,6 +945,7 @@ def _update_text_group(
         max_width = cache.get("max_width")
         baseline_y = cache.get("baseline_y")
         template_font_size = cache.get("template_font_size")
+        template_x_positions = cache.get("template_x_positions")
         original_x = cache.get("original_x")
         has_original_x = cache.get("has_x", False)
         original_anchor = cache.get("original_anchor")
@@ -946,6 +982,7 @@ def _update_text_group(
                 text,
                 fit_result,
                 alignment=fallback_alignment,
+                template_x_positions=template_x_positions,
             )
 
             if fallback_result is not None:
@@ -966,6 +1003,7 @@ def _update_text_group(
                         fit_result,
                         alignment=fallback_alignment,
                         absolute_min_font_size=MULTILINE_MIN_FONT_SIZE,
+                        template_x_positions=template_x_positions,
                     )
                     if shrink_result is not None:
                         _applied_size, shrink_width = shrink_result
