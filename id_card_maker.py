@@ -223,6 +223,28 @@ def _format_float(value: float) -> str:
     return ("{:.4f}".format(value)).rstrip("0").rstrip(".")
 
 
+def _synchronise_tspan_positions(element: Element) -> None:
+    """Ensure tspans inherit the parent text element's horizontal position."""
+
+    target_x: Optional[str]
+    if element.hasAttribute("x"):
+        target_x = element.getAttribute("x") or None
+    else:
+        target_x = None
+
+    for node in element.childNodes:
+        if node.nodeType != Node.ELEMENT_NODE:
+            continue
+        if not hasattr(node, "tagName"):
+            continue
+        if node.tagName.lower() != "tspan":
+            continue
+        if target_x:
+            node.setAttribute("x", target_x)
+        elif node.hasAttribute("x"):
+            node.removeAttribute("x")
+
+
 def _extract_template_lines(element: Element) -> Sequence[str]:
     lines = []
     current = []
@@ -973,6 +995,7 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
                 if reference_left is not None:
                     center_value = reference_left + (final_measured_width / 2.0)
                     text_element.setAttribute("x", _format_float(center_value))
+                    _synchronise_tspan_positions(text_element)
                     center_adjusted = True
 
         if (
@@ -984,6 +1007,7 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
             and not center_adjusted
         ):
             text_element.setAttribute("x", original_x)
+            _synchronise_tspan_positions(text_element)
 
         if (
             not multiline_applied
