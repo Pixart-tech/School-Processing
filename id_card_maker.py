@@ -17,6 +17,8 @@ DEFAULT_TEMPLATE_ROOT = Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL ID CARD 
 DEFAULT_OUTPUT_ROOT = Path("ID Cards")
 DEFAULT_PHOTO_ROOT = Path(r"\\pixartnas\home\INTERNAL_PROCESSING\ALL_PHOTOS")
 
+SCHOOL_LABEL_FILENAME = "school_label.txt"
+
 
 class TemplateNotFoundError(FileNotFoundError):
     """Raised when the required SVG templates for a school cannot be located."""
@@ -64,6 +66,29 @@ def _build_child_output_base(first_name: str, last_name: str, school_name: str) 
         parts.append("school")
     base = "_".join(part for part in parts if part)
     return base or "student_school"
+
+
+def _extract_outer_code_prefix(outer_code: str) -> str:
+    digits = "".join(ch for ch in outer_code if ch.isdigit())
+    return digits[:3]
+
+
+def _build_school_label(school_name: str, outer_code: str) -> str:
+    school_component = _sanitize_filename_component(school_name, "School")
+    outer_prefix = _extract_outer_code_prefix(outer_code)
+    parts = [part for part in (outer_prefix, school_component) if part]
+    return "_".join(parts) if parts else "School"
+
+
+def _write_school_label(school_dir: Path, label: str) -> None:
+    if not label:
+        return
+    try:
+        school_dir.mkdir(parents=True, exist_ok=True)
+        label_path = school_dir / SCHOOL_LABEL_FILENAME
+        label_path.write_text(label, encoding="utf-8")
+    except OSError:
+        pass
 
 
 _title_case_regex = re.compile(r"\b\w+\b")
@@ -1248,6 +1273,9 @@ def personalize_id_card(
     photos_output_dir = child_output_dir / "working" / "images"
 
     _ensure_directory(child_output_dir)
+    outer_code = _normalise_string(record.get("outer_code"))
+    school_label = _build_school_label(school_name_raw, outer_code)
+    _write_school_label(school_output_dir, school_label)
     working_dir = child_output_dir / "working"
     _prepare_working_directory(template_dir, working_dir)
 
