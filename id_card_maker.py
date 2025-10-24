@@ -6,7 +6,7 @@ import math
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple, NamedTuple
+from typing import Dict, Iterable, Iterator, Optional, Sequence, Tuple, NamedTuple, Union
 from PIL import ImageFont
 from xml.dom.minidom import Document, Element, Node, parse
 
@@ -847,7 +847,14 @@ def _shrink_two_line_text(
     return applied_size, measured_width
 
 
-def _update_text_group(group: Element, text: str, *, max_characters: Optional[int] = None, reduction: float = 0.0) -> None:
+def _update_text_group(
+    group: Element,
+    text: str,
+    *,
+    max_characters: Optional[int] = None,
+    reduction: float = 0.0,
+    text_length_override: Optional[int] = None,
+) -> None:
     text_elements = list(group.getElementsByTagName("text"))
 
     base_alignment = _resolve_layer_alignment(group)
@@ -893,7 +900,8 @@ def _update_text_group(group: Element, text: str, *, max_characters: Optional[in
         current_lines: Sequence[str] = [text]
 
         _set_text(text_element, text)
-        _adjust_font_size(text_element, len(text), max_characters, reduction)
+        effective_length = text_length_override if text_length_override is not None else len(text)
+        _adjust_font_size(text_element, effective_length, max_characters, reduction)
 
         cache = cached_dimensions[index] if index < len(cached_dimensions) else {}
         max_width = cache.get("max_width")
@@ -1082,18 +1090,40 @@ def _prepare_working_directory(template_dir: Path, working_dir: Path) -> None:
     shutil.copytree(template_dir, working_dir)
 
 
-def _process_svg(svg_path: Path, updates: Dict[str, Tuple[str, Optional[int], float]], image_updates: Dict[str, str], address_updates: Dict[str, str]) -> bool:
+TextUpdate = Tuple[str, Optional[int], float]
+ExtendedTextUpdate = Tuple[str, Optional[int], float, Optional[int]]
+
+
+def _process_svg(
+    svg_path: Path,
+    updates: Dict[str, Union[TextUpdate, ExtendedTextUpdate]],
+    image_updates: Dict[str, str],
+    address_updates: Dict[str, str],
+) -> bool:
     if svg_path is None or not svg_path.exists():
         return False
 
     doc = parse(str(svg_path))
     group_map = _find_group_map(doc)
 
-    for group_id, (text, max_chars, reduction) in updates.items():
+    for group_id, update in updates.items():
+        if len(update) == 3:
+            text, max_chars, reduction = update  # type: ignore[misc]
+            text_length_override = None
+        elif len(update) == 4:
+            text, max_chars, reduction, text_length_override = update  # type: ignore[misc]
+        else:
+            continue
         group = group_map.get(group_id)
         if group is None:
             continue
-        _update_text_group(group, text, max_characters=max_chars, reduction=reduction)
+        _update_text_group(
+            group,
+            text,
+            max_characters=max_chars,
+            reduction=reduction,
+            text_length_override=text_length_override,
+        )
 
     for group_id, text in address_updates.items():
         group = group_map.get(group_id)
@@ -1246,8 +1276,10 @@ def personalize_id_card(
     father_photo_name = _copy_photo(father_photo_path, photos_output_dir) if father_photo_path else None
     mother_photo_name = _copy_photo(mother_photo_path, photos_output_dir) if mother_photo_path else None
 
+    combined_name_length = len(first_name + last_name)
+
     text_updates_front = {
-        "name": (full_name, 15, 0.6),
+        "name": (full_name, 15, 0.6, combined_name_length),
         "grade": (class_name, 14, 0.5),
         "branch": (school_branch, 20, 0.5),
         "mcontact": (mother_contact, 14, 0.5),
@@ -1261,7 +1293,7 @@ def personalize_id_card(
     }
 
     text_updates_back = {
-        "name": (full_name, 15, 0.6),
+        "name": (full_name, 15, 0.6, combined_name_length),
         "mcontact": (mother_contact, 15, 0.5),
         "fcontact": (father_contact, 15, 0.5),
         "fname": (father_name, 30, 0.3),
