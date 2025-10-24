@@ -103,6 +103,17 @@ def _sanitize_school_label(value: str) -> str:
    return sanitized
 
 
+def _read_id_card_label(school_dir: Path) -> Optional[str]:
+   label_path = school_dir / "school_label.txt"
+   if not label_path.is_file():
+      return None
+   try:
+      value = label_path.read_text(encoding="utf-8").strip()
+   except OSError:
+      return None
+   return _sanitize_school_label(value) if value else None
+
+
 def _merge_pdf_files(pdf_paths: Sequence[Path], output_path: Path) -> bool:
    combined = fitz.open()
    try:
@@ -227,7 +238,8 @@ def _collect_id_card_documents(
       if not pdfs:
          continue
       school_id = school_dir.name
-      label = name_overrides.get(school_id) or _sanitize_school_label(school_dir.name)
+      label_override = _read_id_card_label(school_dir)
+      label = label_override or name_overrides.get(school_id) or _sanitize_school_label(school_dir.name)
       documents.append(SchoolDocuments(school_id, label, pdfs))
    return documents
 
