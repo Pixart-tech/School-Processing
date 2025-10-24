@@ -689,14 +689,6 @@ def _apply_multiline_layout(
     min_font_size: float = MIN_FONT_SIZE,
     initial_size: Optional[float] = None,
 ) -> Tuple[float, Optional[float]]:
-    if not hasattr(element, "_cached_original_x_recorded"):
-        setattr(element, "_cached_original_x_recorded", True)
-        setattr(element, "_cached_original_x_exists", element.hasAttribute("x"))
-        if element.hasAttribute("x"):
-            setattr(element, "_cached_original_x", element.getAttribute("x"))
-        else:
-            setattr(element, "_cached_original_x", None)
-
     if initial_size is not None:
         effective_size = max(initial_size, min_font_size)
     else:
@@ -787,31 +779,6 @@ def _apply_multiline_layout(
     element.setAttribute("dominant-baseline", "alphabetic")
 
     _set_multiline_text(element, lines, line_height=baseline_spacing)
-
-    normalized_alignment = alignment.strip().lower() if alignment else ""
-    if normalized_alignment in {"center", "centre", "middle"}:
-        cached_has_original = getattr(element, "_cached_original_x_exists", False)
-        cached_original = getattr(element, "_cached_original_x", None)
-        reference_left: Optional[float] = None
-
-        if cached_has_original and cached_original is not None:
-            original_left = _parse_first_coordinate(cached_original)
-            if original_left is not None:
-                reference_left = original_left + fit_result.transform_dx
-
-        if reference_left is None and element.hasAttribute("x"):
-            reference_left = _parse_first_coordinate(element.getAttribute("x"))
-
-        if measured_width is None:
-            width_candidate = _measure_text_block_width(element, lines, effective_size)
-            if width_candidate is not None:
-                measured_width = width_candidate
-
-        if reference_left is not None and measured_width is not None:
-            center_value = reference_left + (measured_width / 2.0)
-            element.setAttribute("x", _format_float(center_value))
-
-    _synchronise_tspan_positions(element)
 
     return effective_size, measured_width
 
