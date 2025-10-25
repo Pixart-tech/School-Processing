@@ -1158,7 +1158,13 @@ def _update_address_group(group: Element, text: str) -> None:
         element_alignment = _resolve_layer_alignment(text_element) or base_alignment
         if element_alignment:
             _apply_alignment(text_element, element_alignment)
-        _set_multiline_text(text_element, lines)
+
+        template_x_positions = _extract_tspan_x_positions(text_element)
+        _set_multiline_text(
+            text_element,
+            lines,
+            template_x_positions=template_x_positions if template_x_positions else None,
+        )
 
 
 def _find_group_map(doc: Document) -> Dict[str, Element]:
