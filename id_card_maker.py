@@ -1119,7 +1119,12 @@ def _update_text_group(
                         if shrink_width is not None:
                             final_measured_width = shrink_width
 
-        final_alignment = element_alignment or base_alignment or "center"
+        final_alignment_raw = element_alignment or base_alignment or "center"
+        final_alignment = (
+            _interpret_alignment_token(final_alignment_raw)
+            if final_alignment_raw
+            else None
+        ) or final_alignment_raw or "center"
 
         if final_measured_width is None:
             final_font_size = _extract_font_size(text_element)
