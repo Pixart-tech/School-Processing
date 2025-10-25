@@ -25,14 +25,24 @@ class TemplateNotFoundError(FileNotFoundError):
 def _is_missing(value: object) -> bool:
     if value is None:
         return True
-    if isinstance(value, float):
-        return math.isnan(value)
+    if isinstance(value, float) and math.isnan(value):  # Detect NaN properly
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
     return False
 
 
 def _normalise_string(value: object, default: str = "") -> str:
     if _is_missing(value):
         return default
+
+    # Handle numeric inputs (int or float)
+    if isinstance(value, (int, float)):
+        # For whole floats like 1234.0, drop the .0
+        if float(value).is_integer():
+            return str(int(value))
+        return str(value)
+
     value_str = str(value).strip()
     return value_str if value_str else default
 
@@ -621,23 +631,23 @@ def _split_text_into_two_lines(text: str) -> Sequence[str]:
     return [line for line in (first, second) if line]
 
 
-def _split_text_into_four_lines(text: str) -> Sequence[str]:
+def _split_text_into_multi_lines(text: str, num_lines: int) -> Sequence[str]:
     cleaned = text.strip()
     if not cleaned:
         return [""]
 
     words = cleaned.split()
-    if len(words) <= 4:
+    if len(words) <= num_lines:
         return [cleaned]
 
     # Split into four roughly equal parts
     total = len(words)
-    avg = total // 4
-    remainder = total % 4
+    avg = total // num_lines
+    remainder = total % num_lines
 
     parts = []
     start = 0
-    for i in range(4):
+    for i in range(num_lines):
         end = start + avg + (1 if i < remainder else 0)
         part = " ".join(words[start:end]).strip()
         if part:
@@ -910,10 +920,11 @@ def _apply_two_line_layout(
     min_font_size: float = MIN_FONT_SIZE,
     template_x_positions: Optional[Sequence[str]] = None,
     address_mode: bool = False,
+    number_of_lines: int = 2,
 ) -> Optional[Tuple[Sequence[str], float, Optional[float]]]:
     
     if address_mode:
-        lines = _split_text_into_four_lines(text)
+        lines = _split_text_into_multi_lines(text, number_of_lines)
     else:
         lines = _split_text_into_two_lines(text)
     
@@ -1079,6 +1090,11 @@ def _update_text_group(
                 address_mode=False,
             )
 
+            lines, _size, measured_width = fallback_result
+            current_lines = list(lines)
+            if measured_width is not None:
+                final_measured_width = measured_width
+
             if address_mode and  (
                     fit_result.max_width is not None
                     and fit_result.max_width > 0
@@ -1092,7 +1108,29 @@ def _update_text_group(
                     alignment=fallback_alignment,
                     template_x_positions=template_x_positions,
                     address_mode=True,
+                    number_of_lines=3,
                 )
+
+                lines, _size, measured_width = fallback_result
+                current_lines = list(lines)
+                if measured_width is not None:
+                    final_measured_width = measured_width
+                
+                if  (
+                    fit_result.max_width is not None
+                    and fit_result.max_width > 0
+                    and final_measured_width is not None
+                    and final_measured_width > fit_result.max_width
+                ):
+                    fallback_result = _apply_two_line_layout(
+                        text_element,
+                        text,
+                        fit_result,
+                        alignment=fallback_alignment,
+                        template_x_positions=template_x_positions,
+                        address_mode=True,
+                        number_of_lines=4,
+                    )
 
             if fallback_result is not None:                
                 multiline_applied = True
@@ -1446,6 +1484,7 @@ def personalize_id_card(
         father_name = guardian_1_name
         father_contact = guardian_1_mobile
         father_photo_id = guardian_1_id
+        print("Father assigned from guardian 1", father_contact)
     elif guardian_1_type == 1:
         mother_name = guardian_1_name
         mother_contact = guardian_1_mobile
