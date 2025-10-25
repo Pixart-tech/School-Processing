@@ -621,6 +621,32 @@ def _split_text_into_two_lines(text: str) -> Sequence[str]:
     return [line for line in (first, second) if line]
 
 
+def _split_text_into_four_lines(text: str) -> Sequence[str]:
+    cleaned = text.strip()
+    if not cleaned:
+        return [""]
+
+    words = cleaned.split()
+    if len(words) <= 4:
+        return [cleaned]
+
+    # Split into four roughly equal parts
+    total = len(words)
+    avg = total // 4
+    remainder = total % 4
+
+    parts = []
+    start = 0
+    for i in range(4):
+        end = start + avg + (1 if i < remainder else 0)
+        part = " ".join(words[start:end]).strip()
+        if part:
+            parts.append(part)
+        start = end
+
+    return parts
+
+
 def _apply_alignment(element: Element, alignment: str) -> None:
     """Apply SVG text alignment while accepting common synonyms."""
 
@@ -883,8 +909,14 @@ def _apply_two_line_layout(
     alignment: str = "center",
     min_font_size: float = MIN_FONT_SIZE,
     template_x_positions: Optional[Sequence[str]] = None,
+    address_mode: bool = False,
 ) -> Optional[Tuple[Sequence[str], float, Optional[float]]]:
-    lines = _split_text_into_two_lines(text)
+    
+    if address_mode:
+        lines = _split_text_into_four_lines(text)
+    else:
+        lines = _split_text_into_two_lines(text)
+    
     if len(lines) < 2:
         return None
 
@@ -950,6 +982,7 @@ def _update_text_group(
     max_characters: Optional[int] = None,
     reduction: float = 0.0,
     text_length_override: Optional[int] = None,
+    address_mode: bool = False,
 ) -> None:
     text_elements = list(group.getElementsByTagName("text"))
 
@@ -1028,7 +1061,6 @@ def _update_text_group(
         multiline_applied = False
         center_adjusted = False
         
-        print(f"Text '{text}' fit result: fits={fit_result.fits}, id={group.getAttribute('id')}, max_width={fit_result.max_width}, font_size={fit_result.font_size}")
         
         if (
             text.strip()
@@ -1037,15 +1069,32 @@ def _update_text_group(
             and fit_result.max_width is not None
         ):
             fallback_alignment = element_alignment or "center"
+            
             fallback_result = _apply_two_line_layout(
                 text_element,
                 text,
                 fit_result,
                 alignment=fallback_alignment,
                 template_x_positions=template_x_positions,
+                address_mode=False,
             )
 
-            if fallback_result is not None:
+            if address_mode and  (
+                    fit_result.max_width is not None
+                    and fit_result.max_width > 0
+                    and final_measured_width is not None
+                    and final_measured_width > fit_result.max_width
+                ):
+                fallback_result = _apply_two_line_layout(
+                    text_element,
+                    text,
+                    fit_result,
+                    alignment=fallback_alignment,
+                    template_x_positions=template_x_positions,
+                    address_mode=True,
+                )
+
+            if fallback_result is not None:                
                 multiline_applied = True
                 lines, _size, measured_width = fallback_result
                 current_lines = list(lines)
@@ -1248,7 +1297,15 @@ def _process_svg(
         group = group_map.get(group_id)
         if group is None:
             continue
-        _update_address_group(group, text)
+        #_update_address_group(group, text)
+        _update_text_group(
+            group,
+            text,
+            max_characters=100,
+            reduction=0.5,
+            text_length_override=None,
+            address_mode=True,
+        )
 
     for group_id, image_name in image_updates.items():
         if not image_name:
