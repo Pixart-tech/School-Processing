@@ -28,6 +28,7 @@ from id_card_maker import (
     _resolve_font_path,
     _update_text_group,
     _resolve_address_value,
+    _update_address_group,
 )
 
 
@@ -327,6 +328,38 @@ class AddressResolutionTests(unittest.TestCase):
     def test_handles_missing_values(self):
         record = {"address": "", "current_address": None}
         self.assertEqual(_resolve_address_value(record), "")
+
+
+class AddressLayoutTests(unittest.TestCase):
+    def test_middle_aligned_fallback_preserves_center_position(self):
+        doc = Document()
+        svg = doc.createElement("svg")
+        doc.appendChild(svg)
+
+        group = doc.createElement("g")
+        group.setAttribute("id", "address_middle")
+        svg.appendChild(group)
+
+        text_element = doc.createElement("text")
+        text_element.setAttribute("style", "font-size:10px")
+        group.appendChild(text_element)
+
+        for index in range(4):
+            tspan = doc.createElement("tspan")
+            tspan.setAttribute("x", "100")
+            if index > 0:
+                tspan.setAttribute("dy", "5")
+            tspan.appendChild(doc.createTextNode(f"Template Line {index+1}"))
+            text_element.appendChild(tspan)
+
+        _update_address_group(group, "First Line\nSecond Line")
+
+        self.assertEqual(text_element.getAttribute("text-anchor"), "middle")
+
+        tspans = text_element.getElementsByTagName("tspan")
+        self.assertEqual(tspans.length, 2)
+        for tspan in tspans:
+            self.assertEqual(tspan.getAttribute("x"), "100")
 
 
 if __name__ == "__main__":
